@@ -32,6 +32,55 @@ func TestChangePathsSummary(t *testing.T) {
 	}
 }
 
+func TestEngine_FullSyncRejectsConcurrentManualSync(t *testing.T) {
+	backend := newRecordingBackend()
+	backend.blockFullSync = make(chan struct{})
+	engine := NewEngine(backend)
+	mapping := testMapping(t, "manual-dup")
+	mapping.ID = "map-manual"
+
+	done := make(chan struct{})
+	go func() {
+		_, err := engine.FullSync(context.Background(), mapping)
+		if err != nil {
+			t.Errorf("first FullSync: %v", err)
+		}
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	_, err := engine.FullSync(context.Background(), mapping)
+	if !errors.Is(err, ErrSyncInProgress) {
+		t.Fatalf("second FullSync err = %v, want ErrSyncInProgress", err)
+	}
+
+	close(backend.blockFullSync)
+	<-done
+}
+
+func TestEngine_FullSyncRejectsWhileAutoPushRunning(t *testing.T) {
+	backend := newRecordingBackend()
+	backend.blockFirst = make(chan struct{})
+	engine := NewEngine(backend)
+	mapping := testMapping(t, "manual-auto")
+	if err := engine.StartMapping(mapping); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.StopMapping(mapping.ID) })
+
+	if err := os.WriteFile(filepath.Join(mapping.LocalPath, "busy.txt"), []byte("busy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receivePush(t, backend.calls)
+
+	_, err := engine.FullSync(context.Background(), mapping)
+	if !errors.Is(err, ErrSyncInProgress) {
+		t.Fatalf("FullSync during auto push err = %v, want ErrSyncInProgress", err)
+	}
+
+	close(backend.blockFirst)
+}
+
 func TestEngine_FileCreatePushesUpload(t *testing.T) {
 	backend := newRecordingBackend()
 	engine := NewEngine(backend)
@@ -227,12 +276,13 @@ func testMapping(t *testing.T, id string) *config.SyncMapping {
 }
 
 type recordingBackend struct {
-	mu         sync.Mutex
-	pushes     int
-	calls      chan []Change
-	canceled   chan struct{}
-	blockFirst chan struct{}
-	cancelOnce sync.Once
+	mu            sync.Mutex
+	pushes        int
+	calls         chan []Change
+	canceled      chan struct{}
+	blockFirst    chan struct{}
+	blockFullSync chan struct{}
+	cancelOnce    sync.Once
 }
 
 func newRecordingBackend() *recordingBackend {
@@ -245,6 +295,9 @@ func newRecordingBackend() *recordingBackend {
 func (b *recordingBackend) Name() string { return "recording" }
 
 func (b *recordingBackend) FullSync(context.Context, *config.SyncMapping, func(Event)) (*Stats, error) {
+	if b.blockFullSync != nil {
+		<-b.blockFullSync
+	}
 	return &Stats{}, nil
 }
 

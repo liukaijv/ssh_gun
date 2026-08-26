@@ -14,6 +14,9 @@ import (
 	"ssh_gun/internal/config"
 )
 
+// ErrSyncInProgress is returned when a mapping already has a sync running.
+var ErrSyncInProgress = errors.New("sync already in progress")
+
 // GetServerFunc resolves a configured server by ID.
 type GetServerFunc func(id string) (config.Server, error)
 
@@ -49,8 +52,10 @@ type Engine struct {
 	now     func() time.Time
 	emit    func(Event)
 
-	mu       sync.Mutex
-	mappings map[string]*runningMapping
+	mu         sync.Mutex
+	mappings   map[string]*runningMapping
+	syncMu     sync.Mutex
+	activeSync map[string]struct{}
 }
 
 type runningMapping struct {
@@ -59,6 +64,7 @@ type runningMapping struct {
 	owned   bool
 	cancel  context.CancelFunc
 	done    chan struct{}
+	retry   chan struct{}
 }
 
 type pushResult struct {
@@ -86,9 +92,10 @@ func NewEngineWithFactory(get GetServerFunc, factory BackendFactory, options ...
 
 func newEngine(options []EngineOption) *Engine {
 	engine := &Engine{
-		now:      time.Now,
-		emit:     func(Event) {},
-		mappings: make(map[string]*runningMapping),
+		now:        time.Now,
+		emit:       func(Event) {},
+		mappings:   make(map[string]*runningMapping),
+		activeSync: make(map[string]struct{}),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -145,6 +152,7 @@ func (e *Engine) StartMapping(mapping *config.SyncMapping) error {
 		owned:   owned,
 		cancel:  cancel,
 		done:    make(chan struct{}),
+		retry:   make(chan struct{}, 1),
 	}
 
 	e.mu.Lock()
@@ -184,12 +192,46 @@ func (e *Engine) FullSync(ctx context.Context, mapping *config.SyncMapping) (*St
 	if mapping == nil {
 		return nil, errors.New("sync mapping is required")
 	}
+	if mapping.ID == "" {
+		return nil, errors.New("sync mapping ID is required")
+	}
+	if err := e.beginSync(mapping.ID); err != nil {
+		return nil, err
+	}
+	defer e.endSync(mapping.ID)
+
 	backend, owned, err := e.resolveBackend(ctx, mapping)
 	if err != nil {
 		return nil, err
 	}
 	defer closeOwnedBackend(backend, owned)
 	return backend.FullSync(ctx, mapping, e.emit)
+}
+
+func (e *Engine) beginSync(id string) error {
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
+	if _, busy := e.activeSync[id]; busy {
+		return ErrSyncInProgress
+	}
+	e.activeSync[id] = struct{}{}
+	return nil
+}
+
+func (e *Engine) endSync(id string) {
+	e.syncMu.Lock()
+	delete(e.activeSync, id)
+	var retry chan struct{}
+	if running, ok := e.mappings[id]; ok {
+		retry = running.retry
+	}
+	e.syncMu.Unlock()
+	if retry != nil {
+		select {
+		case retry <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (e *Engine) runMapping(
@@ -209,6 +251,9 @@ func (e *Engine) runMapping(
 		if syncing || len(pending) == 0 || ctx.Err() != nil {
 			return
 		}
+		if err := e.beginSync(running.mapping.ID); err != nil {
+			return
+		}
 		changes := sortedChanges(pending)
 		clear(pending)
 		syncing = true
@@ -224,6 +269,7 @@ func (e *Engine) runMapping(
 			"paths", changePathsSummary(changes, 20),
 		)
 		go func() {
+			defer e.endSync(running.mapping.ID)
 			stats, err := running.backend.PushChanges(ctx, running.mapping, changes, e.emit)
 			results <- pushResult{stats: stats, err: err, started: started, name: name}
 		}()
@@ -236,6 +282,8 @@ func (e *Engine) runMapping(
 				<-results
 			}
 			return
+		case <-running.retry:
+			startPush()
 		case batch, ok := <-batches:
 			if !ok {
 				batches = nil

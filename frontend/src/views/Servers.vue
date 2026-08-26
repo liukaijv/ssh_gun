@@ -12,6 +12,7 @@ import {
   NSelect,
   NSpace,
   NTag,
+  useDialog,
   useMessage,
   type DataTableColumns,
   type FormInst,
@@ -35,6 +36,7 @@ interface ServerUI {
 }
 
 const message = useMessage()
+const dialog = useDialog()
 const { t } = useI18n()
 const rows = ref<ServerUI[]>([])
 const show = ref(false)
@@ -113,7 +115,7 @@ const columns = computed<DataTableColumns<ServerUI>>(() => [
         default: () => [
           h(NButton, { size: 'tiny', secondary: true, onClick: () => onTest(r.id) }, { default: () => t('servers.test') }),
           h(NButton, { size: 'tiny', secondary: true, onClick: () => onEdit(r) }, { default: () => t('common.edit') }),
-          h(NButton, { size: 'tiny', secondary: true, type: 'error', onClick: () => onDelete(r.id) }, { default: () => t('common.delete') }),
+          h(NButton, { size: 'tiny', secondary: true, type: 'error', onClick: () => onDelete(r) }, { default: () => t('common.delete') }),
         ],
       }),
   },
@@ -190,14 +192,23 @@ async function onSave() {
   }
 }
 
-async function onDelete(id: string) {
-  try {
-    await DeleteServer(id)
-    await refresh()
-    message.success(t('common.deleted'))
-  } catch (e: any) {
-    message.error(String(e))
-  }
+function onDelete(row: ServerUI) {
+  const name = row.name || row.id
+  dialog.warning({
+    title: t('common.deleteConfirmTitle'),
+    content: t('servers.deleteConfirm', { name }),
+    positiveText: t('common.deleteConfirmPositive'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      try {
+        await DeleteServer(row.id)
+        await refresh()
+        message.success(t('common.deleted'))
+      } catch (e: any) {
+        message.error(String(e))
+      }
+    },
+  })
 }
 
 async function onTest(id: string) {

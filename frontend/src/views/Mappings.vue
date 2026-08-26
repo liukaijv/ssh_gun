@@ -37,6 +37,7 @@ const rows = ref<any[]>([])
 const servers = ref<{ label: string; value: string }[]>([])
 const show = ref(false)
 const refreshing = ref(false)
+const syncingIds = ref<Set<string>>(new Set())
 const formRef = ref<FormInst | null>(null)
 const form = reactive<any>({
   id: '',
@@ -119,15 +120,17 @@ const columns = computed<DataTableColumns<any>>(() => [
     title: t('common.actions'),
     key: 'actions',
     width: 220,
-    render: (r) =>
-        h(NSpace, {size: 6}, {
-          default: () => [
-            h(NButton, {
-              size: 'tiny',
-              secondary: true,
-              disabled: !r.Enabled,
-              onClick: () => onSync(r.ID),
-            }, {default: () => t('mappings.sync')}),
+    render: (r) => {
+      const syncing = syncingIds.value.has(r.ID)
+      return h(NSpace, {size: 6}, {
+        default: () => [
+          h(NButton, {
+            size: 'tiny',
+            secondary: true,
+            loading: syncing,
+            disabled: !r.Enabled || syncing,
+            onClick: () => onSync(r),
+          }, {default: () => t('mappings.sync')}),
             h(NButton, {size: 'tiny', secondary: true, onClick: () => onEdit(r)}, {default: () => t('common.edit')}),
             h(NButton, {
               size: 'tiny',
@@ -135,8 +138,9 @@ const columns = computed<DataTableColumns<any>>(() => [
               type: 'error',
               onClick: () => onDelete(r)
             }, {default: () => t('common.delete')}),
-          ],
-        }),
+          ], 
+        })
+    },
   },
 ])
 
@@ -259,19 +263,57 @@ function onDelete(row: any) {
   })
 }
 
-async function onSync(id: string) {
-  const row = rows.value.find((r) => r.ID === id)
-  if (row && !row.Enabled) {
+function onSync(row: any) {
+  const id = row.ID
+  if (!row.Enabled) {
     message.error(t('mappings.syncDisabled'))
     return
   }
+  if (syncingIds.value.has(id)) {
+    message.warning(t('mappings.syncInProgress'))
+    return
+  }
+  const name = row.Name || row.name || id
+  dialog.warning({
+    title: t('mappings.syncConfirmTitle'),
+    content: t('mappings.syncConfirm', { name }),
+    positiveText: t('mappings.sync'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      void runFullSync(id)
+    },
+  })
+}
+
+async function runFullSync(id: string) {
+  if (syncingIds.value.has(id)) {
+    message.warning(t('mappings.syncInProgress'))
+    return
+  }
+  syncingIds.value = new Set(syncingIds.value).add(id)
+  // Defer "started" toast so an immediate busy response only shows syncInProgress.
+  const startedToast = setTimeout(() => {
+    message.info(t('mappings.syncStarted'))
+  }, 400)
   try {
     const res = await RunFullSync(id)
-    if ((res as any).result === 'ok') message.success(t('mappings.syncDone', {count: (res as any).files ?? 0}))
-    else message.error((res as any).error || t('mappings.syncFailed'))
+    clearTimeout(startedToast)
+    if ((res as any).result === 'ok') {
+      message.success(t('mappings.syncDone', {count: (res as any).files ?? 0}))
+    } else if ((res as any).result === 'busy') {
+      message.warning(t('mappings.syncInProgress'))
+    } else {
+      message.error((res as any).error || t('mappings.syncFailed'))
+    }
     await refresh()
   } catch (e: any) {
+    clearTimeout(startedToast)
     message.error(String(e))
+  } finally {
+    clearTimeout(startedToast)
+    const next = new Set(syncingIds.value)
+    next.delete(id)
+    syncingIds.value = next
   }
 }
 
@@ -280,6 +322,7 @@ async function onBrowseLocal() {
     const path = await SelectLocalDirectory(form.localPath || '')
     if (path) {
       form.localPath = path
+      await formRef.value?.validate(undefined, ['localPath']).catch(() => {})
     }
   } catch (e: any) {
     message.error(String(e))

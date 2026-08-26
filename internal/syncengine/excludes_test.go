@@ -40,8 +40,14 @@ func TestShouldSkipDir(t *testing.T) {
 
 func TestDefaultExcludes(t *testing.T) {
 	got := DefaultExcludes()
-	if len(got) != 1 || got[0] != ".git/" {
-		t.Fatalf("DefaultExcludes() = %#v, want [.git/]", got)
+	want := []string{".git/", "*~", "*.swp"}
+	if len(got) != len(want) {
+		t.Fatalf("DefaultExcludes() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("DefaultExcludes()[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 

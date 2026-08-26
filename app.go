@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -252,9 +253,14 @@ func (a *App) RunFullSync(id string) (map[string]any, error) {
 	result := "ok"
 	errMsg := ""
 	if err != nil {
-		result = "failed"
-		errMsg = err.Error()
-		a.log.Error("sync failed", "mapping", m.Name, "err", err)
+		if errors.Is(err, syncengine.ErrSyncInProgress) {
+			result = "busy"
+			errMsg = err.Error()
+		} else {
+			result = "failed"
+			errMsg = err.Error()
+			a.log.Error("sync failed", "mapping", m.Name, "err", err)
+		}
 	} else {
 		a.log.Info("sync end",
 			"mapping", m.Name,

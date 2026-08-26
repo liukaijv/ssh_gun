@@ -216,6 +216,14 @@ func (m *Manager) acceptLoop(running *runningForward, handle func(*connectionPai
 		}
 		running.conns[pair] = struct{}{}
 		running.active++
+		clientAddr := conn.RemoteAddr().String()
+		m.log.Info("port forward connection opened",
+			"id", running.id,
+			"name", running.name,
+			"type", running.fwdType,
+			"active", running.active,
+			"client", clientAddr,
+		)
 		m.mu.Unlock()
 
 		running.wg.Add(1)
@@ -226,6 +234,13 @@ func (m *Manager) acceptLoop(running *runningForward, handle func(*connectionPai
 				m.mu.Lock()
 				delete(running.conns, pair)
 				running.active--
+				m.log.Info("port forward connection closed",
+					"id", running.id,
+					"name", running.name,
+					"type", running.fwdType,
+					"active", running.active,
+					"client", clientAddr,
+				)
 				m.mu.Unlock()
 			}()
 			handle(pair)
