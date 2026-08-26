@@ -1,0 +1,33 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@vicons/ionicons5": "^0.13.0",
+    "naive-ui": "^2.45.2",
+    "pinia": "^2.3.1",
+    "vue": "^3.2.37",
+    "vue-i18n": "^11.4.9",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@babel/types": "^7.18.10",
+    "@types/node": "^26.3.0",
+    "@vitejs/plugin-vue": "^3.0.3",
+    "@vue/test-utils": "^2.4.11",
+    "happy-dom": "^20.11.6",
+    "jsdom": "^29.1.1",
+    "typescript": "5.6",
+    "vite": "^3.0.7",
+    "vitest": "^4.1.11",
+    "vue-tsc": "^2.2.12"
+  }
+}
