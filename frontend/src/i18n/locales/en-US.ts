@@ -129,6 +129,7 @@ export default {
     chinese: '简体中文',
     english: 'English',
     languageSaved: 'Language updated',
+    trayHint: 'Closing the window keeps the app in the system tray; auto sync and port forwards keep running. Use Quit in the tray menu to exit completely.',
     syncSettings: 'File synchronization',
     syncBackend: 'Sync method',
     syncBackendRestartHint: 'Applies to all directory mappings. Restart the app before sync tasks use it.',

@@ -161,6 +161,9 @@ onMounted(async () => {
             </n-space>
           </n-radio-group>
         </n-form-item>
+        <n-form-item label=" ">
+          <span class="setting-hint">{{ t('settings.trayHint') }}</span>
+        </n-form-item>
       </n-form>
     </n-card>
 

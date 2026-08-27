@@ -129,6 +129,7 @@ export default {
     chinese: '简体中文',
     english: 'English',
     languageSaved: '语言已切换',
+    trayHint: '关闭窗口后应用保留在系统托盘，自动同步与端口转发继续运行；如需完全退出，请使用托盘菜单的「退出」。',
     syncSettings: '文件同步',
     syncBackend: '同步方式',
     syncBackendRestartHint: '此设置对所有目录映射生效，重启应用后应用于同步任务。',

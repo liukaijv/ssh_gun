@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -31,6 +32,10 @@ type App struct {
 	engine *syncengine.Engine
 	log    *slog.Logger
 	ring   *applog.RingBuffer
+
+	// quitting separates a real quit (tray menu) from closing the window,
+	// which only hides it into the notification area.
+	quitting atomic.Bool
 }
 
 func NewApp() *App {
@@ -109,6 +114,35 @@ func (a *App) startup(ctx context.Context) {
 	)
 
 	a.startAutostart()
+
+	go startTray(a)
+}
+
+// beforeClose turns the window close button into "hide to tray" so background
+// sync and port forwards keep running. Only requestQuit lets the app exit.
+func (a *App) beforeClose(ctx context.Context) bool {
+	if a.quitting.Load() {
+		return false
+	}
+	runtime.WindowHide(ctx)
+	a.log.Info("window hidden to tray")
+	return true
+}
+
+func (a *App) showWindow() {
+	if a.ctx == nil {
+		return
+	}
+	runtime.WindowShow(a.ctx)
+	runtime.WindowUnminimise(a.ctx)
+}
+
+func (a *App) requestQuit() {
+	if a.ctx == nil {
+		return
+	}
+	a.quitting.Store(true)
+	runtime.Quit(a.ctx)
 }
 
 func (a *App) stopAllRuntime() {
@@ -151,6 +185,7 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.pool != nil {
 		a.pool.Close()
 	}
+	stopTray()
 }
 
 func defaultConfigPath() string {
@@ -455,7 +490,11 @@ func (a *App) SetLanguage(language string) error {
 	}
 	ui := a.store.UI()
 	ui.Language = normalized
-	return a.store.UpdateUI(ui)
+	if err := a.store.UpdateUI(ui); err != nil {
+		return err
+	}
+	appTray.refreshLabels(normalized)
+	return nil
 }
 
 func (a *App) GetSyncBackend() string {
