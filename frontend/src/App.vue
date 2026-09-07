@@ -17,6 +17,7 @@ import {
   DocumentTextOutline,
   FolderOpenOutline,
   GitNetworkOutline,
+  HardwareChipOutline,
   ServerOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
@@ -44,6 +45,7 @@ const menuOptions = computed<MenuOption[]>(() => {
     { label: t('nav.servers'), key: 'servers', icon: renderIcon(ServerOutline) },
     { label: t('nav.mappings'), key: 'mappings', icon: renderIcon(FolderOpenOutline) },
     { label: t('nav.forwards'), key: 'forwards', icon: renderIcon(GitNetworkOutline) },
+    { label: t('nav.processes'), key: 'processes', icon: renderIcon(HardwareChipOutline) },
     { label: t('nav.logs'), key: 'logs', icon: renderIcon(DocumentTextOutline) },
     { label: t('nav.settings'), key: 'settings', icon: renderIcon(SettingsOutline) },
   ]

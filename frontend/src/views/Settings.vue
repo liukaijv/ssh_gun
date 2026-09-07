@@ -105,6 +105,7 @@ async function onImport() {
       t('settings.summaryServers', { added: res.serversAdded || 0, updated: res.serversUpdated || 0 }),
       t('settings.summaryMappings', { added: res.mappingsAdded || 0, updated: res.mappingsUpdated || 0 }),
       t('settings.summaryForwards', { added: res.forwardsAdded || 0, updated: res.forwardsUpdated || 0 }),
+      t('settings.summaryProcesses', { added: res.processesAdded || 0, updated: res.processesUpdated || 0 }),
     ]
     if (res.secretsMode === 'omitted') {
       parts.push(t('settings.secretsOmitted'))

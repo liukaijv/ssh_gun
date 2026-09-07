@@ -12,12 +12,13 @@ const (
 )
 
 type File struct {
-	Version      int           `toml:"version"`
-	SyncBackend  string        `toml:"sync_backend"`
-	Servers      []Server      `toml:"server"`
-	SyncMappings []SyncMapping `toml:"sync_mapping"`
-	PortForwards []PortForward `toml:"port_forward"`
-	UI           UIState       `toml:"ui"`
+	Version      int              `toml:"version"`
+	SyncBackend  string           `toml:"sync_backend"`
+	Servers      []Server         `toml:"server"`
+	SyncMappings []SyncMapping    `toml:"sync_mapping"`
+	PortForwards []PortForward    `toml:"port_forward"`
+	Processes    []ManagedProcess `toml:"process"`
+	UI           UIState          `toml:"ui"`
 }
 
 const (
@@ -172,6 +173,17 @@ func (f PortForward) NormalizedType() string {
 	default:
 		return f.Type
 	}
+}
+
+// ManagedProcess is a user-defined local background process.
+type ManagedProcess struct {
+	ID        string `toml:"id"`
+	Name      string `toml:"name"`
+	Command   string `toml:"command"` // executable path or name on PATH
+	Args      string `toml:"args"`    // single-line args, shell-style split
+	WorkDir   string `toml:"work_dir"`
+	AutoStart bool   `toml:"auto_start"`
+	Enabled   bool   `toml:"enabled"`
 }
 
 type UIState struct {

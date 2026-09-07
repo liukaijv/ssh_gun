@@ -20,6 +20,11 @@ const router = createRouter({
       component: () => import('@/views/Forwards.vue'),
     },
     {
+      path: '/processes',
+      name: 'processes',
+      component: () => import('@/views/Processes.vue'),
+    },
+    {
       path: '/logs',
       name: 'logs',
       component: () => import('@/views/Logs.vue'),

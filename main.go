@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
 	"ssh_gun/internal/rshbridge"
+	"ssh_gun/internal/singleinstance"
 )
 
 //go:embed all:frontend/dist
@@ -30,11 +32,20 @@ func main() {
 		return
 	}
 
-	// Create an instance of the app structure
-	app := NewApp()
+	guard, err := singleinstance.Acquire()
+	if errors.Is(err, singleinstance.ErrAlreadyRunning) {
+		_ = singleinstance.NotifyActivate()
+		return
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "ssh_gun single instance:", err)
+		os.Exit(1)
+	}
 
-	// Create application with options
-	err := wails.Run(&options.App{
+	app := NewApp()
+	app.instance = guard
+
+	err = wails.Run(&options.App{
 		Title:  "飞梭", // overridden at startup from saved language via WindowSetTitle
 		Width:  1024,
 		Height: 768,

@@ -103,6 +103,7 @@ func cloneFile(f File) File {
 	out.Servers = append([]Server(nil), f.Servers...)
 	out.SyncMappings = append([]SyncMapping(nil), f.SyncMappings...)
 	out.PortForwards = append([]PortForward(nil), f.PortForwards...)
+	out.Processes = append([]ManagedProcess(nil), f.Processes...)
 	for i := range out.SyncMappings {
 		out.SyncMappings[i].Excludes = append([]string(nil), f.SyncMappings[i].Excludes...)
 	}
@@ -403,6 +404,79 @@ func (s *Store) DeletePortForward(id string) error {
 	return s.saveLocked()
 }
 
+func (s *Store) UpsertManagedProcess(p ManagedProcess) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	normalized, err := NormalizeManagedProcess(p)
+	if err != nil {
+		return err
+	}
+	p = normalized
+	replaced := false
+	for i := range s.file.Processes {
+		if s.file.Processes[i].ID == p.ID {
+			s.file.Processes[i] = p
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.file.Processes = append(s.file.Processes, p)
+	}
+	return s.saveLocked()
+}
+
+// NormalizeManagedProcess trims fields and validates required values.
+func NormalizeManagedProcess(p ManagedProcess) (ManagedProcess, error) {
+	p.ID = strings.TrimSpace(p.ID)
+	p.Name = strings.TrimSpace(p.Name)
+	p.Command = strings.TrimSpace(p.Command)
+	p.Args = strings.TrimSpace(p.Args)
+	p.WorkDir = strings.TrimSpace(p.WorkDir)
+	if p.ID == "" {
+		return ManagedProcess{}, fmt.Errorf("managed process id is required")
+	}
+	if p.Name == "" {
+		return ManagedProcess{}, fmt.Errorf("managed process name is required")
+	}
+	if p.Command == "" {
+		return ManagedProcess{}, fmt.Errorf("managed process command is required")
+	}
+	return p, nil
+}
+
+func (s *Store) GetManagedProcess(id string) (ManagedProcess, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.file.Processes {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return ManagedProcess{}, fmt.Errorf("managed process %q not found", id)
+}
+
+func (s *Store) ListManagedProcesses() []ManagedProcess {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ManagedProcess, len(s.file.Processes))
+	copy(out, s.file.Processes)
+	return out
+}
+
+func (s *Store) DeleteManagedProcess(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filtered := s.file.Processes[:0]
+	for _, p := range s.file.Processes {
+		if p.ID != id {
+			filtered = append(filtered, p)
+		}
+	}
+	s.file.Processes = filtered
+	return s.saveLocked()
+}
+
 func (s *Store) UpdateUI(ui UIState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -445,6 +519,8 @@ type ImportSummary struct {
 	MappingsUpdated   int      `json:"mappingsUpdated"`
 	ForwardsAdded     int      `json:"forwardsAdded"`
 	ForwardsUpdated   int      `json:"forwardsUpdated"`
+	ProcessesAdded    int      `json:"processesAdded"`
+	ProcessesUpdated  int      `json:"processesUpdated"`
 	MissingServerRefs []string `json:"missingServerRefs"`
 	SecretsMode       string   `json:"secretsMode"`
 }
@@ -464,6 +540,7 @@ func (s *Store) ImportMerge(incoming File) (ImportSummary, error) {
 	s.file.Servers, sum.ServersAdded, sum.ServersUpdated = mergeServers(s.file.Servers, incoming.Servers)
 	s.file.SyncMappings, sum.MappingsAdded, sum.MappingsUpdated = mergeMappings(s.file.SyncMappings, incoming.SyncMappings)
 	s.file.PortForwards, sum.ForwardsAdded, sum.ForwardsUpdated = mergeForwards(s.file.PortForwards, incoming.PortForwards)
+	s.file.Processes, sum.ProcessesAdded, sum.ProcessesUpdated = mergeProcesses(s.file.Processes, incoming.Processes)
 	sum.MissingServerRefs = missingServerRefs(s.file)
 	if err := s.saveLocked(); err != nil {
 		return ImportSummary{}, err
@@ -480,9 +557,10 @@ func (s *Store) ImportReplace(incoming File) (ImportSummary, error) {
 		return ImportSummary{}, err
 	}
 	sum := ImportSummary{
-		ServersAdded:  len(incoming.Servers),
-		MappingsAdded: len(incoming.SyncMappings),
-		ForwardsAdded: len(incoming.PortForwards),
+		ServersAdded:   len(incoming.Servers),
+		MappingsAdded:  len(incoming.SyncMappings),
+		ForwardsAdded:  len(incoming.PortForwards),
+		ProcessesAdded: len(incoming.Processes),
 	}
 	keepUI := s.file.UI
 	s.file.SyncBackend = syncBackend
@@ -492,6 +570,7 @@ func (s *Store) ImportReplace(incoming File) (ImportSummary, error) {
 		s.file.SyncMappings[i].Excludes = append([]string(nil), incoming.SyncMappings[i].Excludes...)
 	}
 	s.file.PortForwards = append([]PortForward(nil), incoming.PortForwards...)
+	s.file.Processes = append([]ManagedProcess(nil), incoming.Processes...)
 	if incoming.UI != (UIState{}) {
 		s.file.UI = incoming.UI
 	} else {
@@ -560,6 +639,25 @@ func mergeForwards(existing, incoming []PortForward) (out []PortForward, added, 
 		} else {
 			out = append(out, f)
 			index[f.ID] = len(out) - 1
+			added++
+		}
+	}
+	return out, added, updated
+}
+
+func mergeProcesses(existing, incoming []ManagedProcess) (out []ManagedProcess, added, updated int) {
+	out = append([]ManagedProcess(nil), existing...)
+	index := map[string]int{}
+	for i, p := range out {
+		index[p.ID] = i
+	}
+	for _, p := range incoming {
+		if i, ok := index[p.ID]; ok {
+			out[i] = p
+			updated++
+		} else {
+			out = append(out, p)
+			index[p.ID] = len(out) - 1
 			added++
 		}
 	}

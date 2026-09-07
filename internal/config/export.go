@@ -29,18 +29,19 @@ type ExportMeta struct {
 }
 
 type exportDocument struct {
-	Format        string        `toml:"format"`
-	FormatVersion int           `toml:"format_version"`
-	ExportedAt    string        `toml:"exported_at"`
-	Secrets       string        `toml:"secrets"`
-	Salt          string        `toml:"salt,omitempty"`
-	Nonce         string        `toml:"nonce,omitempty"`
-	SecretsBlob   string        `toml:"secrets_blob,omitempty"`
-	SyncBackend   string        `toml:"sync_backend"`
-	Servers       []Server      `toml:"server"`
-	SyncMappings  []SyncMapping `toml:"sync_mapping"`
-	PortForwards  []PortForward `toml:"port_forward"`
-	UI            UIState       `toml:"ui"`
+	Format        string           `toml:"format"`
+	FormatVersion int              `toml:"format_version"`
+	ExportedAt    string           `toml:"exported_at"`
+	Secrets       string           `toml:"secrets"`
+	Salt          string           `toml:"salt,omitempty"`
+	Nonce         string           `toml:"nonce,omitempty"`
+	SecretsBlob   string           `toml:"secrets_blob,omitempty"`
+	SyncBackend   string           `toml:"sync_backend"`
+	Servers       []Server         `toml:"server"`
+	SyncMappings  []SyncMapping    `toml:"sync_mapping"`
+	PortForwards  []PortForward    `toml:"port_forward"`
+	Processes     []ManagedProcess `toml:"process"`
+	UI            UIState          `toml:"ui"`
 }
 
 type serverSecrets struct {
@@ -63,6 +64,7 @@ func Export(file File, passphrase string) ([]byte, error) {
 		Servers:       append([]Server(nil), file.Servers...),
 		SyncMappings:  append([]SyncMapping(nil), file.SyncMappings...),
 		PortForwards:  append([]PortForward(nil), file.PortForwards...),
+		Processes:     append([]ManagedProcess(nil), file.Processes...),
 		UI:            file.UI,
 	}
 	for i := range doc.SyncMappings {
@@ -131,6 +133,7 @@ func ParseExport(data []byte, passphrase string) (File, ExportMeta, error) {
 		Servers:      doc.Servers,
 		SyncMappings: doc.SyncMappings,
 		PortForwards: doc.PortForwards,
+		Processes:    doc.Processes,
 		UI:           doc.UI,
 	}
 

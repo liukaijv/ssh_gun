@@ -15,8 +15,10 @@ import (
 	"ssh_gun/internal/applog"
 	"ssh_gun/internal/config"
 	"ssh_gun/internal/forward"
+	"ssh_gun/internal/procman"
 	"ssh_gun/internal/rsyncbin"
 	"ssh_gun/internal/shellopen"
+	"ssh_gun/internal/singleinstance"
 	"ssh_gun/internal/sshclient"
 	"ssh_gun/internal/syncengine"
 	"ssh_gun/internal/syncengine/rsyncbackend"
@@ -29,9 +31,13 @@ type App struct {
 	store  *config.Store
 	pool   *sshclient.Pool
 	fwd    *forward.Manager
+	procs  *procman.Manager
 	engine *syncengine.Engine
 	log    *slog.Logger
 	ring   *applog.RingBuffer
+
+	// instance is the primary-process guard; secondary launches notify then exit.
+	instance *singleinstance.Guard
 
 	// quitting separates a real quit (tray menu) from closing the window,
 	// which only hides it into the notification area.
@@ -63,6 +69,10 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.store = store
 	a.fwd = forward.NewManager(a.pool, forward.WithLogger(a.log))
+	a.procs = procman.NewManager(
+		procman.WithLogger(a.log),
+		procman.WithStatePath(filepath.Join(userLocalAppData(), "ssh_gun", "process_runtime.json")),
+	)
 	syncBackend := a.store.SyncBackend()
 	a.engine = syncengine.NewEngineWithFactory(
 		func(id string) (config.Server, error) { return a.store.GetServer(id) },
@@ -113,9 +123,17 @@ func (a *App) startup(ctx context.Context) {
 		}),
 	)
 
-	a.startAutostart()
-
+	// Tray must come up before autostart work (SSH connects, sync watchers,
+	// managed processes), otherwise closing to tray shows no icon for a long time.
 	go startTray(a)
+
+	if a.instance != nil {
+		if err := a.instance.ListenActivate(a.showWindow); err != nil {
+			a.log.Error("activate listener", "err", err)
+		}
+	}
+
+	go a.startAutostart()
 }
 
 // beforeClose turns the window close button into "hide to tray" so background
@@ -156,6 +174,9 @@ func (a *App) stopAllRuntime() {
 			_ = a.fwd.Stop(f.ID)
 		}
 	}
+	if a.procs != nil {
+		a.procs.StopAll()
+	}
 }
 
 func (a *App) startAutostart() {
@@ -178,6 +199,14 @@ func (a *App) startAutostart() {
 			_ = a.engine.StartMapping(&mm)
 		}
 	}
+	if a.procs != nil {
+		a.procs.RecoverOnStartup(a.store.ListManagedProcesses())
+		for _, p := range a.store.ListManagedProcesses() {
+			if p.Enabled && p.AutoStart && !a.procs.Status(p.ID).Running {
+				_ = a.procs.Start(p)
+			}
+		}
+	}
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -186,6 +215,10 @@ func (a *App) shutdown(ctx context.Context) {
 		a.pool.Close()
 	}
 	stopTray()
+	if a.instance != nil {
+		a.instance.Close()
+		a.instance = nil
+	}
 }
 
 func defaultConfigPath() string {
@@ -351,6 +384,39 @@ func (a *App) StopPortForward(id string) error {
 
 func (a *App) PortForwardStatus(id string) forward.Status {
 	return a.fwd.Status(id)
+}
+
+// --- Managed processes ---
+
+func (a *App) ListManagedProcesses() []config.ManagedProcess {
+	return a.store.ListManagedProcesses()
+}
+
+func (a *App) UpsertManagedProcess(p config.ManagedProcess) error {
+	return a.store.UpsertManagedProcess(p)
+}
+
+func (a *App) DeleteManagedProcess(id string) error {
+	if a.procs != nil {
+		_ = a.procs.Stop(id)
+	}
+	return a.store.DeleteManagedProcess(id)
+}
+
+func (a *App) StartManagedProcess(id string) error {
+	p, err := a.store.GetManagedProcess(id)
+	if err != nil {
+		return err
+	}
+	return a.procs.Start(p)
+}
+
+func (a *App) StopManagedProcess(id string) error {
+	return a.procs.Stop(id)
+}
+
+func (a *App) ManagedProcessStatus(id string) procman.Status {
+	return a.procs.Status(id)
 }
 
 // --- Logs ---

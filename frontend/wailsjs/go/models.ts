@@ -1,5 +1,29 @@
 export namespace config {
 	
+	export class ManagedProcess {
+	    ID: string;
+	    Name: string;
+	    Command: string;
+	    Args: string;
+	    WorkDir: string;
+	    AutoStart: boolean;
+	    Enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ManagedProcess(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ID = source["ID"];
+	        this.Name = source["Name"];
+	        this.Command = source["Command"];
+	        this.Args = source["Args"];
+	        this.WorkDir = source["WorkDir"];
+	        this.AutoStart = source["AutoStart"];
+	        this.Enabled = source["Enabled"];
+	    }
+	}
 	export class PortForward {
 	    ID: string;
 	    ServerID: string;
@@ -175,6 +199,29 @@ export namespace forward {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Running = source["Running"];
 	        this.ActiveConns = source["ActiveConns"];
+	        this.Err = source["Err"];
+	    }
+	}
+
+}
+
+export namespace procman {
+	
+	export class Status {
+	    Running: boolean;
+	    PID: number;
+	    UptimeSec: number;
+	    Err: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Running = source["Running"];
+	        this.PID = source["PID"];
+	        this.UptimeSec = source["UptimeSec"];
 	        this.Err = source["Err"];
 	    }
 	}
