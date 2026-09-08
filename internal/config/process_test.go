@@ -14,6 +14,11 @@ func TestNormalizeManagedProcess(t *testing.T) {
 		Command: "  memcached.exe ",
 		Args:    " -p 11211 ",
 		WorkDir: " D:\\data ",
+		Env: map[string]string{
+			" OPENAI_TARGET_API_URL ": " https://tokenhub.tencentmaas.com ",
+			"  ":                      "ignored",
+			"FOO":                     " bar ",
+		},
 		Enabled: true,
 	})
 	if err != nil {
@@ -21,6 +26,12 @@ func TestNormalizeManagedProcess(t *testing.T) {
 	}
 	if got.Name != "memcached" || got.Command != "memcached.exe" || got.Args != "-p 11211" || got.WorkDir != `D:\data` {
 		t.Fatalf("got %#v", got)
+	}
+	if got.Env["OPENAI_TARGET_API_URL"] != "https://tokenhub.tencentmaas.com" || got.Env["FOO"] != "bar" {
+		t.Fatalf("env = %#v", got.Env)
+	}
+	if _, ok := got.Env[""]; ok {
+		t.Fatal("empty env key should be dropped")
 	}
 
 	cases := []config.ManagedProcess{
@@ -43,7 +54,9 @@ func TestStore_UpsertManagedProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := config.ManagedProcess{
-		ID: "proc-1", Name: "headroom", Command: "headroom", Args: "proxy --port 8787", Enabled: true, AutoStart: true,
+		ID: "proc-1", Name: "headroom", Command: "headroom", Args: "proxy --port 8787",
+		Env:     map[string]string{"OPENAI_TARGET_API_URL": "https://tokenhub.tencentmaas.com"},
+		Enabled: true, AutoStart: true,
 	}
 	if err := store.UpsertManagedProcess(p); err != nil {
 		t.Fatal(err)
@@ -55,6 +68,23 @@ func TestStore_UpsertManagedProcess(t *testing.T) {
 	if got.Command != "headroom" || !got.AutoStart || !got.Enabled {
 		t.Fatalf("got %#v", got)
 	}
+	if got.Env["OPENAI_TARGET_API_URL"] != "https://tokenhub.tencentmaas.com" {
+		t.Fatalf("env = %#v", got.Env)
+	}
+
+	// Reload from disk to verify TOML round-trip.
+	store2, err := config.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := store2.GetManagedProcess("proc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Env["OPENAI_TARGET_API_URL"] != "https://tokenhub.tencentmaas.com" {
+		t.Fatalf("reloaded env = %#v", got2.Env)
+	}
+
 	list := store.ListManagedProcesses()
 	if len(list) != 1 {
 		t.Fatalf("len=%d", len(list))

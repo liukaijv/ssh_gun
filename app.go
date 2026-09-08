@@ -183,27 +183,57 @@ func (a *App) startAutostart() {
 	if a.store == nil {
 		return
 	}
+
+	// Port forwards, sync, and managed processes must not wait on each other:
+	// a slow/unreachable SSH server must not delay local process AutoStart.
+	go a.autostartPortForwards()
+	go a.autostartSyncMappings()
+	a.autostartManagedProcesses()
+}
+
+func (a *App) autostartPortForwards() {
+	if a.fwd == nil || a.store == nil {
+		return
+	}
 	for _, f := range a.store.ListPortForwards() {
 		if !f.AutoStart {
 			continue
 		}
 		srv, err := a.store.GetServer(f.ServerID)
 		if err != nil {
+			a.log.Warn("autostart port forward: server missing", "id", f.ID, "err", err)
 			continue
 		}
-		_ = a.fwd.Start(a.ctx, f, srv)
-	}
-	for _, m := range a.store.ListSyncMappings() {
-		if m.AutoSync && m.Enabled {
-			mm := m
-			_ = a.engine.StartMapping(&mm)
+		if err := a.fwd.Start(a.ctx, f, srv); err != nil {
+			a.log.Warn("autostart port forward failed", "id", f.ID, "name", f.Name, "err", err)
 		}
 	}
-	if a.procs != nil {
-		a.procs.RecoverOnStartup(a.store.ListManagedProcesses())
-		for _, p := range a.store.ListManagedProcesses() {
-			if p.Enabled && p.AutoStart && !a.procs.Status(p.ID).Running {
-				_ = a.procs.Start(p)
+}
+
+func (a *App) autostartSyncMappings() {
+	if a.engine == nil || a.store == nil {
+		return
+	}
+	for _, m := range a.store.ListSyncMappings() {
+		if !(m.AutoSync && m.Enabled) {
+			continue
+		}
+		mm := m
+		if err := a.engine.StartMapping(&mm); err != nil {
+			a.log.Warn("autostart sync mapping failed", "id", m.ID, "name", m.Name, "err", err)
+		}
+	}
+}
+
+func (a *App) autostartManagedProcesses() {
+	if a.procs == nil || a.store == nil {
+		return
+	}
+	a.procs.RecoverOnStartup(a.store.ListManagedProcesses())
+	for _, p := range a.store.ListManagedProcesses() {
+		if p.Enabled && p.AutoStart && !a.procs.Status(p.ID).Running {
+			if err := a.procs.Start(p); err != nil {
+				a.log.Warn("autostart managed process failed", "id", p.ID, "name", p.Name, "err", err)
 			}
 		}
 	}

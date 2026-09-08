@@ -177,13 +177,14 @@ func (f PortForward) NormalizedType() string {
 
 // ManagedProcess is a user-defined local background process.
 type ManagedProcess struct {
-	ID        string `toml:"id"`
-	Name      string `toml:"name"`
-	Command   string `toml:"command"` // executable path or name on PATH
-	Args      string `toml:"args"`    // single-line args, shell-style split
-	WorkDir   string `toml:"work_dir"`
-	AutoStart bool   `toml:"auto_start"`
-	Enabled   bool   `toml:"enabled"`
+	ID        string            `toml:"id"`
+	Name      string            `toml:"name"`
+	Command   string            `toml:"command"` // executable path or name on PATH
+	Args      string            `toml:"args"`    // single-line args, shell-style split
+	WorkDir   string            `toml:"work_dir"`
+	Env       map[string]string `toml:"env"` // injected only into this process on Start
+	AutoStart bool              `toml:"auto_start"`
+	Enabled   bool              `toml:"enabled"`
 }
 
 type UIState struct {

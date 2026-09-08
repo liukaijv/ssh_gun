@@ -442,7 +442,26 @@ func NormalizeManagedProcess(p ManagedProcess) (ManagedProcess, error) {
 	if p.Command == "" {
 		return ManagedProcess{}, fmt.Errorf("managed process command is required")
 	}
+	p.Env = normalizeProcessEnv(p.Env)
 	return p, nil
+}
+
+func normalizeProcessEnv(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		out[k] = strings.TrimSpace(v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *Store) GetManagedProcess(id string) (ManagedProcess, error) {

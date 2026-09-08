@@ -6,6 +6,7 @@ export namespace config {
 	    Command: string;
 	    Args: string;
 	    WorkDir: string;
+	    Env: Record<string, string>;
 	    AutoStart: boolean;
 	    Enabled: boolean;
 	
@@ -20,6 +21,7 @@ export namespace config {
 	        this.Command = source["Command"];
 	        this.Args = source["Args"];
 	        this.WorkDir = source["WorkDir"];
+	        this.Env = source["Env"];
 	        this.AutoStart = source["AutoStart"];
 	        this.Enabled = source["Enabled"];
 	    }

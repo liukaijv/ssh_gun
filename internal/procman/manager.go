@@ -105,6 +105,7 @@ func (m *Manager) Start(cfg config.ManagedProcess) error {
 	if normalized.WorkDir != "" {
 		cmd.Dir = normalized.WorkDir
 	}
+	applyProcessEnv(&cmd.Env, normalized.Env)
 	configureSysProcAttr(cmd)
 
 	stdout, err := cmd.StdoutPipe()

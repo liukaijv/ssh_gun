@@ -27,7 +27,7 @@ import {
   ManagedProcessStatus,
   SelectLocalDirectory,
 } from '../../wailsjs/go/main/App'
-import { canSaveProcessForm } from './processForm'
+import { canSaveProcessForm, formatProcessEnv, parseProcessEnvText } from './processForm'
 
 function formatUptime(sec: number): string {
   const s = Math.max(0, Math.floor(sec || 0))
@@ -53,6 +53,7 @@ const form = reactive({
   command: '',
   args: '',
   workDir: '',
+  envText: '',
   enabled: true,
   autoStart: false,
 })
@@ -175,6 +176,7 @@ function onCreate() {
     command: '',
     args: '',
     workDir: '',
+    envText: '',
     enabled: true,
     autoStart: false,
   })
@@ -188,6 +190,7 @@ function onEdit(r: any) {
     command: r.Command,
     args: r.Args || '',
     workDir: r.WorkDir || '',
+    envText: formatProcessEnv(r.Env),
     enabled: r.Enabled,
     autoStart: r.AutoStart,
   })
@@ -203,6 +206,11 @@ async function onSave() {
   if (!canSaveProcessForm({ name: form.name, command: form.command })) {
     return
   }
+  const parsed = parseProcessEnvText(form.envText)
+  if (parsed.error) {
+    message.error(t('processes.envInvalid', { detail: parsed.error }))
+    return
+  }
   try {
     await UpsertManagedProcess({
       ID: form.id,
@@ -210,6 +218,7 @@ async function onSave() {
       Command: form.command.trim(),
       Args: form.args.trim(),
       WorkDir: form.workDir.trim(),
+      Env: parsed.env,
       Enabled: form.enabled,
       AutoStart: form.autoStart,
     } as any)
@@ -313,6 +322,14 @@ onUnmounted(() => {
           <n-input v-model:value="form.workDir" style="flex: 1" :placeholder="t('processes.workDirPlaceholder')" />
           <n-button @click="onBrowseWorkDir">{{ t('common.browse') }}</n-button>
         </n-space>
+      </n-form-item>
+      <n-form-item :label="t('processes.env')">
+        <n-input
+          v-model:value="form.envText"
+          type="textarea"
+          :rows="4"
+          :placeholder="t('processes.envPlaceholder')"
+        />
       </n-form-item>
       <n-form-item :label="t('processes.enabled')"><n-switch v-model:value="form.enabled" /></n-form-item>
       <n-form-item :label="t('processes.autoStart')"><n-switch v-model:value="form.autoStart" /></n-form-item>
