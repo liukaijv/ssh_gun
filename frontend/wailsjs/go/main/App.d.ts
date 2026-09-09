@@ -16,6 +16,8 @@ export function ExportConfig(arg1:string):Promise<string>;
 
 export function GetLanguage():Promise<string>;
 
+export function GetLaunchAtLogin():Promise<boolean>;
+
 export function GetSyncBackend():Promise<string>;
 
 export function GetTheme():Promise<string>;
@@ -47,6 +49,8 @@ export function RunFullSync(arg1:string):Promise<Record<string, any>>;
 export function SelectLocalDirectory(arg1:string):Promise<string>;
 
 export function SetLanguage(arg1:string):Promise<void>;
+
+export function SetLaunchAtLogin(arg1:boolean):Promise<void>;
 
 export function SetSyncBackend(arg1:string):Promise<void>;
 

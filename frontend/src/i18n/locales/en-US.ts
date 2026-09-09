@@ -154,6 +154,8 @@ export default {
     english: 'English',
     languageSaved: 'Language updated',
     trayHint: 'Closing the window keeps the app in the system tray; auto sync and port forwards keep running. Use Quit in the tray menu to exit completely.',
+    launchAtLogin: 'Launch at login',
+    launchAtLoginHint: 'Start this app automatically when you sign in',
     syncSettings: 'File synchronization',
     syncBackend: 'Sync method',
     syncBackendRestartHint: 'Applies to all directory mappings. Restart the app before sync tasks use it.',

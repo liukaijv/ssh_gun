@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"ssh_gun/internal/applog"
+	"ssh_gun/internal/autostart"
 	"ssh_gun/internal/config"
 	"ssh_gun/internal/forward"
 	"ssh_gun/internal/procman"
@@ -577,6 +578,14 @@ func (a *App) GetLanguage() string {
 		return "zh-CN"
 	}
 	return language
+}
+
+func (a *App) GetLaunchAtLogin() (bool, error) {
+	return autostart.Enabled()
+}
+
+func (a *App) SetLaunchAtLogin(enabled bool) error {
+	return autostart.SetEnabled(enabled)
 }
 
 func (a *App) SetLanguage(language string) error {

@@ -9,14 +9,17 @@ import {
   NRadio,
   NRadioGroup,
   NSpace,
+  NSwitch,
   useMessage,
 } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   ExportConfig,
+  GetLaunchAtLogin,
   GetSyncBackend,
   ImportConfig,
   OpenConfigDirectory,
+  SetLaunchAtLogin,
   SetSyncBackend,
 } from '../../wailsjs/go/main/App'
 import { useLocaleStore } from '@/stores/locale'
@@ -35,10 +38,30 @@ const exportBusy = ref(false)
 const importBusy = ref(false)
 const syncBackend = ref<'sftp' | 'rsync'>('sftp')
 const syncBackendBusy = ref(false)
+const launchAtLogin = ref(false)
+const launchAtLoginBusy = ref(false)
 
 async function loadSyncBackend() {
   const backend = await GetSyncBackend()
   syncBackend.value = backend === 'rsync' ? 'rsync' : 'sftp'
+}
+
+async function loadLaunchAtLogin() {
+  launchAtLogin.value = await GetLaunchAtLogin()
+}
+
+async function onLaunchAtLoginChange(value: boolean) {
+  const previous = launchAtLogin.value
+  launchAtLogin.value = value
+  launchAtLoginBusy.value = true
+  try {
+    await SetLaunchAtLogin(value)
+  } catch (e: any) {
+    launchAtLogin.value = previous
+    message.error(String(e))
+  } finally {
+    launchAtLoginBusy.value = false
+  }
 }
 
 async function onSaveSyncBackend() {
@@ -128,7 +151,7 @@ async function onImport() {
 
 onMounted(async () => {
   try {
-    await loadSyncBackend()
+    await Promise.all([loadSyncBackend(), loadLaunchAtLogin()])
   } catch (e: any) {
     message.error(String(e))
   }
@@ -161,6 +184,16 @@ onMounted(async () => {
               <n-radio value="en-US">{{ t('settings.english') }}</n-radio>
             </n-space>
           </n-radio-group>
+        </n-form-item>
+        <n-form-item :label="t('settings.launchAtLogin')">
+          <n-space align="center">
+            <n-switch
+              :value="launchAtLogin"
+              :loading="launchAtLoginBusy"
+              @update:value="onLaunchAtLoginChange"
+            />
+            <span class="setting-hint">{{ t('settings.launchAtLoginHint') }}</span>
+          </n-space>
         </n-form-item>
         <n-form-item label=" ">
           <span class="setting-hint">{{ t('settings.trayHint') }}</span>

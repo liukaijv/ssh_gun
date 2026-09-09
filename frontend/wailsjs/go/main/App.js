@@ -26,6 +26,10 @@ export function GetLanguage() {
   return window['go']['main']['App']['GetLanguage']();
 }
 
+export function GetLaunchAtLogin() {
+  return window['go']['main']['App']['GetLaunchAtLogin']();
+}
+
 export function GetSyncBackend() {
   return window['go']['main']['App']['GetSyncBackend']();
 }
@@ -88,6 +92,10 @@ export function SelectLocalDirectory(arg1) {
 
 export function SetLanguage(arg1) {
   return window['go']['main']['App']['SetLanguage'](arg1);
+}
+
+export function SetLaunchAtLogin(arg1) {
+  return window['go']['main']['App']['SetLaunchAtLogin'](arg1);
 }
 
 export function SetSyncBackend(arg1) {
