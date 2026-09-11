@@ -3,6 +3,7 @@ package config_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"ssh_gun/internal/config"
 )
@@ -18,10 +19,16 @@ func sampleFile() config.File {
 		SyncMappings: []config.SyncMapping{{
 			ID: "map-1", ServerID: "srv-1", Name: "proj",
 			LocalPath: `D:\Work\proj`, RemotePath: "/opt/proj",
+			AutoSync: true, LastSyncAt: time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC),
+			LastSyncResult: "ok", LastSyncError: "should-not-export",
 		}},
 		PortForwards: []config.PortForward{{
 			ID: "fwd-1", ServerID: "srv-1", Name: "mysql",
 			Type: config.ForwardTypeLocal, LocalPort: 3316, RemotePort: 3306,
+			AutoStart: true,
+		}},
+		Processes: []config.ManagedProcess{{
+			ID: "proc-1", Name: "demo", Command: "demo.exe", Enabled: true, AutoStart: true,
 		}},
 		UI: config.UIState{WindowWidth: 1200, Theme: "dark"},
 	}
@@ -80,6 +87,38 @@ func TestExport_EncryptedRoundTrip(t *testing.T) {
 	}
 	if got.Servers[0].Password != "p@ss/word" || got.Servers[0].KeyPassphrase != "phrase" {
 		t.Fatalf("secrets = %+v", got.Servers[0])
+	}
+}
+
+func TestExport_DisablesAutostartAndClearsLastSync(t *testing.T) {
+	src := sampleFile()
+	data, err := config.Export(src, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := config.ParseExport(data, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SyncMappings[0].AutoSync {
+		t.Fatal("exported mapping AutoSync should be false")
+	}
+	m := got.SyncMappings[0]
+	if !m.LastSyncAt.IsZero() || m.LastSyncResult != "" || m.LastSyncError != "" {
+		t.Fatalf("LastSync* should be cleared: %+v", m)
+	}
+	if got.PortForwards[0].AutoStart {
+		t.Fatal("exported forward AutoStart should be false")
+	}
+	if got.Processes[0].AutoStart {
+		t.Fatal("exported process AutoStart should be false")
+	}
+	// Source file used for export must not be mutated.
+	if !src.SyncMappings[0].AutoSync || src.SyncMappings[0].LastSyncError == "" {
+		t.Fatalf("source mapping mutated: %+v", src.SyncMappings[0])
+	}
+	if !src.PortForwards[0].AutoStart || !src.Processes[0].AutoStart {
+		t.Fatal("source autostart flags mutated")
 	}
 }
 

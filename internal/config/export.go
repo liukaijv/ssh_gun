@@ -69,6 +69,16 @@ func Export(file File, passphrase string) ([]byte, error) {
 	}
 	for i := range doc.SyncMappings {
 		doc.SyncMappings[i].Excludes = append([]string(nil), file.SyncMappings[i].Excludes...)
+		doc.SyncMappings[i].AutoSync = false
+		doc.SyncMappings[i].LastSyncAt = time.Time{}
+		doc.SyncMappings[i].LastSyncResult = ""
+		doc.SyncMappings[i].LastSyncError = ""
+	}
+	for i := range doc.PortForwards {
+		doc.PortForwards[i].AutoStart = false
+	}
+	for i := range doc.Processes {
+		doc.Processes[i].AutoStart = false
 	}
 
 	if passphrase == "" {

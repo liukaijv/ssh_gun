@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"ssh_gun/internal/config"
 )
@@ -43,6 +44,41 @@ func TestNormalizeSyncMapping_RequiredFields(t *testing.T) {
 				t.Fatalf("error %q should mention %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestSanitizeLastSyncError(t *testing.T) {
+	t.Parallel()
+	in := "line1\r\nline2\x00ok " + string([]byte{0xff, 0xfe}) + " end"
+	got := config.SanitizeLastSyncError(in)
+	if strings.ContainsAny(got, "\r\n\x00") {
+		t.Fatalf("controls remain: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("invalid utf8: %q", got)
+	}
+	if !strings.Contains(got, "line1") || !strings.Contains(got, "line2") {
+		t.Fatalf("got %q", got)
+	}
+
+	long := strings.Repeat("啊", 2000)
+	got = config.SanitizeLastSyncError(long)
+	if utf8.RuneCountInString(got) > 1025 { // 1024 + ellipsis
+		t.Fatalf("too long: %d", utf8.RuneCountInString(got))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("expected ellipsis, got ending %q", got[len(got)-3:])
+	}
+
+	m, err := config.NormalizeSyncMapping(config.SyncMapping{
+		ID: "1", ServerID: "s", Name: "n", LocalPath: "L", RemotePath: "R",
+		LastSyncError: "a\nb\x00c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.LastSyncError != "a bc" {
+		t.Fatalf("normalized error = %q", m.LastSyncError)
 	}
 }
 

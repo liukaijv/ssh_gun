@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,13 +41,26 @@ type App struct {
 	// instance is the primary-process guard; secondary launches notify then exit.
 	instance *singleinstance.Guard
 
+	// runtimeSyncStatus overlays LastSync* for the UI (auto-sync; not persisted).
+	syncStatusMu sync.Mutex
+	syncStatus   map[string]runtimeSyncStatus
+
 	// quitting separates a real quit (tray menu) from closing the window,
 	// which only hides it into the notification area.
 	quitting atomic.Bool
 }
 
+type runtimeSyncStatus struct {
+	At     time.Time
+	Result string
+	Error  string
+}
+
 func NewApp() *App {
-	return &App{pool: sshclient.NewPool()}
+	return &App{
+		pool:       sshclient.NewPool(),
+		syncStatus: make(map[string]runtimeSyncStatus),
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -121,6 +135,17 @@ func (a *App) startup(ctx context.Context) {
 				a.log.Debug("sync file", "path", ev.RelPath, "op", ev.Op, "file_sync", true)
 			}
 			runtime.EventsEmit(a.ctx, "sync:event", payload)
+		}),
+		syncengine.WithSyncFinish(func(finish syncengine.SyncFinish) {
+			a.rememberSyncStatus(finish.MappingID, finish.Result, finish.Error, finish.At)
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "sync:status", map[string]any{
+					"id":     finish.MappingID,
+					"result": finish.Result,
+					"error":  config.SanitizeLastSyncError(finish.Error),
+					"at":     finish.At.Format(time.RFC3339Nano),
+				})
+			}
 		}),
 	)
 
@@ -318,7 +343,33 @@ func (a *App) SelectLocalDirectory(defaultPath string) (string, error) {
 }
 
 func (a *App) ListSyncMappings() []config.SyncMapping {
-	return a.store.ListSyncMappings()
+	list := a.store.ListSyncMappings()
+	a.syncStatusMu.Lock()
+	defer a.syncStatusMu.Unlock()
+	for i := range list {
+		if st, ok := a.syncStatus[list[i].ID]; ok {
+			list[i].LastSyncAt = st.At
+			list[i].LastSyncResult = st.Result
+			list[i].LastSyncError = st.Error
+		}
+	}
+	return list
+}
+
+func (a *App) rememberSyncStatus(id, result, errMsg string, at time.Time) {
+	if id == "" {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	a.syncStatusMu.Lock()
+	a.syncStatus[id] = runtimeSyncStatus{
+		At:     at,
+		Result: result,
+		Error:  config.SanitizeLastSyncError(errMsg),
+	}
+	a.syncStatusMu.Unlock()
 }
 
 func (a *App) UpsertSyncMapping(m config.SyncMapping) error {
@@ -346,7 +397,7 @@ func (a *App) RunFullSync(id string) (map[string]any, error) {
 	if !m.Enabled {
 		return nil, fmt.Errorf("sync mapping is disabled")
 	}
-	a.log.Info("sync start", "mapping", m.Name, "trigger", "manual")
+	a.log.Info("sync start", "mapping", m.Name, "trigger", "manual", "backend", a.store.SyncBackend())
 	start := time.Now()
 	stats, err := a.engine.FullSync(a.ctx, &m)
 	result := "ok"
@@ -358,11 +409,13 @@ func (a *App) RunFullSync(id string) (map[string]any, error) {
 		} else {
 			result = "failed"
 			errMsg = err.Error()
-			a.log.Error("sync failed", "mapping", m.Name, "err", err)
+			a.log.Error("sync failed", "mapping", m.Name, "backend", a.store.SyncBackend(), "err", err)
 		}
 	} else {
 		a.log.Info("sync end",
 			"mapping", m.Name,
+			"trigger", "manual",
+			"backend", a.store.SyncBackend(),
 			"files", stats.Files,
 			"deleted", stats.Deleted,
 			"bytes", stats.Bytes,
@@ -372,7 +425,16 @@ func (a *App) RunFullSync(id string) (map[string]any, error) {
 	m.LastSyncAt = time.Now()
 	m.LastSyncResult = result
 	m.LastSyncError = errMsg
+	a.rememberSyncStatus(m.ID, result, errMsg, m.LastSyncAt)
 	_ = a.store.UpsertSyncMapping(m)
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "sync:status", map[string]any{
+			"id":     m.ID,
+			"result": result,
+			"error":  config.SanitizeLastSyncError(errMsg),
+			"at":     m.LastSyncAt.Format(time.RFC3339Nano),
+		})
+	}
 	out := map[string]any{"result": result, "error": errMsg}
 	if stats != nil {
 		out["files"] = stats.Files

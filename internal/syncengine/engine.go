@@ -44,13 +44,31 @@ func WithEmitter(emit func(Event)) EngineOption {
 	}
 }
 
+// SyncFinish describes the outcome of an auto or manual sync pass for UI status.
+type SyncFinish struct {
+	MappingID string
+	Result    string // ok | failed
+	Error     string
+	At        time.Time
+}
+
+// WithSyncFinish is called when an auto-sync PushChanges finishes (success or fail).
+func WithSyncFinish(fn func(SyncFinish)) EngineOption {
+	return func(engine *Engine) {
+		if fn != nil {
+			engine.onFinish = fn
+		}
+	}
+}
+
 // Engine runs independent, serial auto-sync queues for configured mappings.
 type Engine struct {
-	backend Backend
-	get     GetServerFunc
-	factory BackendFactory
-	now     func() time.Time
-	emit    func(Event)
+	backend  Backend
+	get      GetServerFunc
+	factory  BackendFactory
+	now      func() time.Time
+	emit     func(Event)
+	onFinish func(SyncFinish)
 
 	mu         sync.Mutex
 	mappings   map[string]*runningMapping
@@ -68,10 +86,12 @@ type runningMapping struct {
 }
 
 type pushResult struct {
-	stats   *Stats
-	err     error
-	started time.Time
-	name    string
+	mappingID   string
+	stats       *Stats
+	err         error
+	started     time.Time
+	name        string
+	backendName string
 }
 
 // NewEngine creates an engine using an already-constructed backend.
@@ -262,16 +282,28 @@ func (e *Engine) runMapping(
 			name = running.mapping.ID
 		}
 		started := e.now()
+		backendName := ""
+		if running.backend != nil {
+			backendName = running.backend.Name()
+		}
 		slog.Info("sync start",
 			"mapping", name,
 			"trigger", "auto",
+			"backend", backendName,
 			"files", len(changes),
 			"paths", changePathsSummary(changes, 20),
 		)
 		go func() {
 			defer e.endSync(running.mapping.ID)
 			stats, err := running.backend.PushChanges(ctx, running.mapping, changes, e.emit)
-			results <- pushResult{stats: stats, err: err, started: started, name: name}
+			results <- pushResult{
+				mappingID:   running.mapping.ID,
+				stats:       stats,
+				err:         err,
+				started:     started,
+				name:        name,
+				backendName: backendName,
+			}
 		}()
 	}
 
@@ -304,8 +336,16 @@ func (e *Engine) runMapping(
 		case result := <-results:
 			syncing = false
 			if result.err != nil && ctx.Err() == nil {
-				slog.Error("sync failed", "mapping", result.name, "trigger", "auto", "err", result.err)
+				slog.Error("sync failed", "mapping", result.name, "trigger", "auto", "backend", result.backendName, "err", result.err)
 				e.emit(Event{Err: result.err})
+				if e.onFinish != nil {
+					e.onFinish(SyncFinish{
+						MappingID: result.mappingID,
+						Result:    "failed",
+						Error:     result.err.Error(),
+						At:        e.now(),
+					})
+				}
 			} else if result.err == nil {
 				files, deleted, bytes := 0, 0, int64(0)
 				if result.stats != nil {
@@ -316,11 +356,19 @@ func (e *Engine) runMapping(
 				slog.Info("sync end",
 					"mapping", result.name,
 					"trigger", "auto",
+					"backend", result.backendName,
 					"files", files,
 					"deleted", deleted,
 					"bytes", bytes,
 					"dur", e.now().Sub(result.started).String(),
 				)
+				if e.onFinish != nil {
+					e.onFinish(SyncFinish{
+						MappingID: result.mappingID,
+						Result:    "ok",
+						At:        e.now(),
+					})
+				}
 			}
 			startPush()
 		}

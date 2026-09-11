@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import {computed, h, onMounted, reactive, ref} from 'vue'
+import {computed, h, onMounted, onUnmounted, reactive, ref} from 'vue'
 import {
   type DataTableColumns,
   type FormInst,
@@ -28,6 +28,7 @@ import {
   SelectLocalDirectory,
   UpsertSyncMapping,
 } from '../../wailsjs/go/main/App'
+import {EventsOn} from '../../wailsjs/runtime/runtime'
 import {canSaveMappingForm} from './mappingForm'
 
 const message = useMessage()
@@ -39,6 +40,7 @@ const show = ref(false)
 const refreshing = ref(false)
 const syncingIds = ref<Set<string>>(new Set())
 const formRef = ref<FormInst | null>(null)
+let offSyncStatus: (() => void) | undefined
 const form = reactive<any>({
   id: '',
   serverId: '',
@@ -329,7 +331,28 @@ async function onBrowseLocal() {
   }
 }
 
-onMounted(refresh)
+onMounted(() => {
+  void refresh()
+  offSyncStatus = EventsOn('sync:status', (payload: any) => {
+    const id = payload?.id
+    if (!id) return
+    const idx = rows.value.findIndex((r: any) => r.ID === id)
+    if (idx < 0) return
+    const next = rows.value.slice()
+    next[idx] = {
+      ...next[idx],
+      LastSyncResult: payload.result ?? next[idx].LastSyncResult,
+      LastSyncError: payload.error ?? '',
+      LastSyncAt: payload.at ?? next[idx].LastSyncAt,
+    }
+    rows.value = next
+  })
+})
+
+onUnmounted(() => {
+  offSyncStatus?.()
+  offSyncStatus = undefined
+})
 </script>
 
 <template>

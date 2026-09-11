@@ -141,7 +141,42 @@ func NormalizeSyncMapping(m SyncMapping) (SyncMapping, error) {
 	if m.DirMode == 0 {
 		m.DirMode = 0o755
 	}
+	m.LastSyncError = SanitizeLastSyncError(m.LastSyncError)
 	return m, nil
+}
+
+const maxLastSyncErrorRunes = 1024
+
+// SanitizeLastSyncError makes sync error text safe to persist in TOML
+// (valid UTF-8, no control/newline chars, bounded length).
+func SanitizeLastSyncError(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = strings.ToValidUTF8(s, "")
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := false
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t' || r == ' ':
+			if !lastSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+		case r < 0x20 || r == 0x7f:
+			// drop other controls
+		default:
+			b.WriteRune(r)
+			lastSpace = false
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	runes := []rune(out)
+	if len(runes) > maxLastSyncErrorRunes {
+		return string(runes[:maxLastSyncErrorRunes]) + "…"
+	}
+	return out
 }
 
 // Port forward types (empty Type means local for backward compatibility).

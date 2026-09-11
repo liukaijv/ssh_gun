@@ -41,6 +41,7 @@ func (execRunner) Run(ctx context.Context, command Command) error {
 	defer cleanupCommandFiles(command)
 	process := exec.CommandContext(ctx, command.Path, command.Args...)
 	process.Env = command.Env
+	configureRsyncCmd(process)
 	output, err := process.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
