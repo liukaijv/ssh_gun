@@ -11,7 +11,7 @@ require (
 	github.com/git-pkgs/gitignore v1.2.0
 	github.com/google/go-cmp v0.7.0
 	github.com/pkg/sftp v1.13.9
-	github.com/wailsapp/wails/v2 v2.12.0
+	github.com/wailsapp/wails/v2 v2.16.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
 )
