@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Test Go
+        run: go test ./...
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Set product version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v(\d+\.\d+\.\d+)$') {
+            throw "Tag must look like v1.2.3, got $($env:RELEASE_TAG)"
+          }
+          $config = Get-Content -Raw wails.json | ConvertFrom-Json
+          $info = [ordered]@{ productVersion = $Matches[1] }
+          if ($config.PSObject.Properties.Name -contains 'info' -and $null -ne $config.info) {
+            foreach ($prop in $config.info.PSObject.Properties) {
+              if ($prop.Name -ne 'productVersion') { $info[$prop.Name] = $prop.Value }
+            }
+          }
+          $value = [pscustomobject]$info
+          if ($config.PSObject.Properties.Name -contains 'info') {
+            $config.info = $value
+          } else {
+            $config | Add-Member -NotePropertyName info -NotePropertyValue $value
+          }
+          $json = ($config | ConvertTo-Json -Depth 10) + "`n"
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'wails.json'), $json)
+
+      - name: Build
+        run: wails build -clean -trimpath -platform windows/amd64 -webview2 download -o "Feisuo-${{ github.ref_name }}.exe"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Feisuo ${{ github.ref_name }}
+          files: build/bin/Feisuo-${{ github.ref_name }}.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
