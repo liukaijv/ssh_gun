@@ -105,7 +105,7 @@ func cloneFile(f File) File {
 	out.PortForwards = append([]PortForward(nil), f.PortForwards...)
 	out.Processes = append([]ManagedProcess(nil), f.Processes...)
 	for i := range out.SyncMappings {
-		out.SyncMappings[i].Excludes = append([]string(nil), f.SyncMappings[i].Excludes...)
+		out.SyncMappings[i] = cloneSyncMapping(f.SyncMappings[i])
 	}
 	return out
 }
@@ -586,7 +586,7 @@ func (s *Store) ImportReplace(incoming File) (ImportSummary, error) {
 	s.file.Servers = append([]Server(nil), incoming.Servers...)
 	s.file.SyncMappings = append([]SyncMapping(nil), incoming.SyncMappings...)
 	for i := range s.file.SyncMappings {
-		s.file.SyncMappings[i].Excludes = append([]string(nil), incoming.SyncMappings[i].Excludes...)
+		s.file.SyncMappings[i] = cloneSyncMapping(incoming.SyncMappings[i])
 	}
 	s.file.PortForwards = append([]PortForward(nil), incoming.PortForwards...)
 	s.file.Processes = append([]ManagedProcess(nil), incoming.Processes...)
@@ -624,15 +624,14 @@ func mergeServers(existing, incoming []Server) (out []Server, added, updated int
 func mergeMappings(existing, incoming []SyncMapping) (out []SyncMapping, added, updated int) {
 	out = append([]SyncMapping(nil), existing...)
 	for i := range out {
-		out[i].Excludes = append([]string(nil), existing[i].Excludes...)
+		out[i] = cloneSyncMapping(existing[i])
 	}
 	index := map[string]int{}
 	for i, m := range out {
 		index[m.ID] = i
 	}
 	for _, m := range incoming {
-		cp := m
-		cp.Excludes = append([]string(nil), m.Excludes...)
+		cp := cloneSyncMapping(m)
 		if i, ok := index[m.ID]; ok {
 			out[i] = cp
 			updated++

@@ -82,6 +82,43 @@ func TestSanitizeLastSyncError(t *testing.T) {
 	}
 }
 
+func TestNormalizeSyncMapping_FilterMode(t *testing.T) {
+	t.Parallel()
+
+	base := config.SyncMapping{ID: "1", ServerID: "s", Name: "n", LocalPath: "L", RemotePath: "R"}
+
+	got, err := config.NormalizeSyncMapping(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FilterMode != config.FilterModeExclude {
+		t.Fatalf("default FilterMode = %q, want %q", got.FilterMode, config.FilterModeExclude)
+	}
+
+	got, err = config.NormalizeSyncMapping(config.SyncMapping{
+		ID: "1", ServerID: "s", Name: "n", LocalPath: "L", RemotePath: "R",
+		FilterMode: " INCLUDE ",
+		Includes:   []string{"src/", "README.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FilterMode != config.FilterModeInclude {
+		t.Fatalf("FilterMode = %q, want include", got.FilterMode)
+	}
+	if len(got.Includes) != 2 {
+		t.Fatalf("Includes = %#v", got.Includes)
+	}
+
+	_, err = config.NormalizeSyncMapping(config.SyncMapping{
+		ID: "1", ServerID: "s", Name: "n", LocalPath: "L", RemotePath: "R",
+		FilterMode: "both",
+	})
+	if err == nil {
+		t.Fatal("expected invalid filter mode error")
+	}
+}
+
 func TestStore_UpsertSyncMapping_RejectsInvalidAndDoesNotPersist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	store, err := config.Open(path)

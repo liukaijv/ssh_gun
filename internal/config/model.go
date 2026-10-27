@@ -24,6 +24,9 @@ type File struct {
 const (
 	SyncBackendSFTP  = "sftp"
 	SyncBackendRsync = "rsync"
+
+	FilterModeExclude = "exclude"
+	FilterModeInclude = "include"
 )
 
 func NormalizeSyncBackend(backend string) (string, error) {
@@ -95,7 +98,9 @@ type SyncMapping struct {
 	Name         string   `toml:"name"`
 	LocalPath    string   `toml:"local_path"`
 	RemotePath   string   `toml:"remote_path"`
+	FilterMode   string   `toml:"filter_mode"`
 	Excludes     []string `toml:"excludes"`
+	Includes     []string `toml:"includes"`
 	UseGitignore bool     `toml:"use_gitignore"`
 	DeleteExtra  bool     `toml:"delete_extra"`
 	Backend      string   `toml:"backend"`
@@ -129,6 +134,11 @@ func NormalizeSyncMapping(m SyncMapping) (SyncMapping, error) {
 	if m.RemotePath == "" {
 		return SyncMapping{}, fmt.Errorf("sync mapping remote path is required")
 	}
+	mode, err := NormalizeFilterMode(m.FilterMode)
+	if err != nil {
+		return SyncMapping{}, err
+	}
+	m.FilterMode = mode
 	if m.Backend == "" {
 		m.Backend = "sftp"
 	}
@@ -240,6 +250,23 @@ func NormalizeTheme(theme string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid theme %q", theme)
 	}
+}
+
+func NormalizeFilterMode(mode string) (string, error) {
+	switch normalized := strings.ToLower(strings.TrimSpace(mode)); normalized {
+	case "", FilterModeExclude:
+		return FilterModeExclude, nil
+	case FilterModeInclude:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("invalid filter mode %q", mode)
+	}
+}
+
+func cloneSyncMapping(m SyncMapping) SyncMapping {
+	m.Excludes = append([]string(nil), m.Excludes...)
+	m.Includes = append([]string(nil), m.Includes...)
+	return m
 }
 
 func NormalizeLanguage(language string) (string, error) {

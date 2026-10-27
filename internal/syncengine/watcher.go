@@ -177,7 +177,7 @@ func (w *Watcher) addRecursive(native *fsnotify.Watcher, root string, discovered
 		if err != nil {
 			return err
 		}
-		if rel != "" && w.matcher.ShouldSkip(rel, true) {
+		if rel != "" && w.matcher.ShouldPruneDir(rel) {
 			return filepath.SkipDir
 		}
 		if isReparsePoint(entry, path) {

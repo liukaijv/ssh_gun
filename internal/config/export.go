@@ -68,7 +68,7 @@ func Export(file File, passphrase string) ([]byte, error) {
 		UI:            file.UI,
 	}
 	for i := range doc.SyncMappings {
-		doc.SyncMappings[i].Excludes = append([]string(nil), file.SyncMappings[i].Excludes...)
+		doc.SyncMappings[i] = cloneSyncMapping(file.SyncMappings[i])
 		doc.SyncMappings[i].AutoSync = false
 		doc.SyncMappings[i].LastSyncAt = time.Time{}
 		doc.SyncMappings[i].LastSyncResult = ""

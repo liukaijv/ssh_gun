@@ -144,6 +144,7 @@ func (e *Engine) StartMapping(mapping *config.SyncMapping) error {
 
 	copyMapping := *mapping
 	copyMapping.Excludes = append([]string(nil), mapping.Excludes...)
+	copyMapping.Includes = append([]string(nil), mapping.Includes...)
 	backend, owned, err := e.resolveBackend(context.Background(), &copyMapping)
 	if err != nil {
 		return err

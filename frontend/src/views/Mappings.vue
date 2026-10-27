@@ -12,6 +12,8 @@ import {
   NInput,
   NInputNumber,
   NModal,
+  NRadioButton,
+  NRadioGroup,
   NSelect,
   NSpace,
   NSwitch,
@@ -47,7 +49,9 @@ const form = reactive<any>({
   name: '',
   localPath: '',
   remotePath: '',
+  filterMode: 'exclude',
   excludesText: '*~\n*.swp\n*.tmp\n.git\n.idea\nnode_modules\n*.log',
+  includesText: '',
   useGitignore: true,
   autoSync: false,
   enabled: true,
@@ -91,8 +95,27 @@ const rules = computed<FormRules>(() => ({
   },
 }))
 
+function splitRules(text: string): string[] {
+  return String(text || '')
+      .split(/\r?\n/)
+      .map((s: string) => s.trim())
+      .filter(Boolean)
+}
+
 const columns = computed<DataTableColumns<any>>(() => [
   {title: t('common.name'), key: 'Name'},
+  {
+    title: t('mappings.filterMode'),
+    key: 'FilterMode',
+    width: 80,
+    render: (r) => {
+      const include = (r.FilterMode || r.filterMode) === 'include'
+      return h(NTag, {
+        size: 'small',
+        type: include ? 'info' : 'default',
+      }, {default: () => t(include ? 'mappings.filterInclude' : 'mappings.filterExclude')})
+    },
+  },
   {title: t('mappings.local'), key: 'LocalPath', ellipsis: {tooltip: true}},
   {title: t('mappings.remote'), key: 'RemotePath', ellipsis: {tooltip: true}},
   {
@@ -177,7 +200,9 @@ function onCreate() {
     name: '',
     localPath: '',
     remotePath: '',
+    filterMode: 'exclude',
     excludesText: '*.tmp\n.git\n.idea\nnode_modules\n*.log',
+    includesText: '',
     useGitignore: true,
     autoSync: false,
     enabled: true,
@@ -195,7 +220,9 @@ function onEdit(r: any) {
     name: r.Name,
     localPath: r.LocalPath,
     remotePath: r.RemotePath,
+    filterMode: (r.FilterMode || r.filterMode) === 'include' ? 'include' : 'exclude',
     excludesText: (r.Excludes || []).join('\n'),
+    includesText: (r.Includes || r.includes || []).join('\n'),
     useGitignore: r.UseGitignore === true,
     autoSync: r.AutoSync,
     enabled: r.Enabled,
@@ -227,10 +254,9 @@ async function onSave() {
       Name: form.name.trim(),
       LocalPath: form.localPath.trim(),
       RemotePath: form.remotePath.trim(),
-      Excludes: String(form.excludesText)
-          .split(/\r?\n/)
-          .map((s: string) => s.trim())
-          .filter(Boolean),
+      FilterMode: form.filterMode === 'include' ? 'include' : 'exclude',
+      Excludes: splitRules(form.excludesText),
+      Includes: splitRules(form.includesText),
       UseGitignore: !!form.useGitignore,
       AutoSync: form.autoSync,
       Enabled: form.enabled,
@@ -383,10 +409,22 @@ onUnmounted(() => {
       <n-form-item :label="t('mappings.remoteDirectory')" path="remotePath">
         <n-input v-model:value="form.remotePath" placeholder="/opt/proj"/>
       </n-form-item>
-      <n-form-item :label="t('mappings.excludes')">
+      <n-form-item :label="t('mappings.filterMode')">
+        <n-radio-group v-model:value="form.filterMode" name="filterMode">
+          <n-radio-button value="exclude">{{ t('mappings.filterExclude') }}</n-radio-button>
+          <n-radio-button value="include">{{ t('mappings.filterInclude') }}</n-radio-button>
+        </n-radio-group>
+      </n-form-item>
+      <n-form-item v-if="form.filterMode !== 'include'" :label="t('mappings.excludes')">
         <n-space vertical :size="4" style="width: 100%">
           <n-input v-model:value="form.excludesText" type="textarea" :rows="4"/>
           <span style="font-size: 12px; opacity: 0.7">{{ t('mappings.excludesHint') }}</span>
+        </n-space>
+      </n-form-item>
+      <n-form-item v-else :label="t('mappings.includes')">
+        <n-space vertical :size="4" style="width: 100%">
+          <n-input v-model:value="form.includesText" type="textarea" :rows="4"/>
+          <span style="font-size: 12px; opacity: 0.7">{{ t('mappings.includesHint') }}</span>
         </n-space>
       </n-form-item>
       <n-form-item :label="t('mappings.useGitignore')">

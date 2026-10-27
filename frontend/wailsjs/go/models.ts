@@ -124,7 +124,9 @@ export namespace config {
 	    Name: string;
 	    LocalPath: string;
 	    RemotePath: string;
+	    FilterMode: string;
 	    Excludes: string[];
+	    Includes: string[];
 	    UseGitignore: boolean;
 	    DeleteExtra: boolean;
 	    Backend: string;
@@ -150,7 +152,9 @@ export namespace config {
 	        this.Name = source["Name"];
 	        this.LocalPath = source["LocalPath"];
 	        this.RemotePath = source["RemotePath"];
+	        this.FilterMode = source["FilterMode"];
 	        this.Excludes = source["Excludes"];
+	        this.Includes = source["Includes"];
 	        this.UseGitignore = source["UseGitignore"];
 	        this.DeleteExtra = source["DeleteExtra"];
 	        this.Backend = source["Backend"];

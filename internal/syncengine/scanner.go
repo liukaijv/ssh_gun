@@ -27,7 +27,7 @@ func ScanLocal(root string, matcher *ExcludeMatcher) ([]FileEntry, error) {
 		if relPath == "" {
 			return nil
 		}
-		if entry.IsDir() && matcher != nil && matcher.ShouldSkip(relPath, true) {
+		if entry.IsDir() && matcher != nil && matcher.ShouldPruneDir(relPath) {
 			return filepath.SkipDir
 		}
 		if matcher != nil && matcher.ShouldSkip(relPath, entry.IsDir()) {

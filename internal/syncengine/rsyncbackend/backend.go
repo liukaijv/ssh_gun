@@ -124,7 +124,7 @@ func (b *Backend) BuildCommand(mapping *config.SyncMapping) (Command, error) {
 
 	args := append([]string(nil), baseArgs...)
 	var cleanup []string
-	if mergeArg, mergePath, err := writeManualMergeFilter(syncengine.ExcludesForMapping(mapping)); err != nil {
+	if mergeArg, mergePath, err := writeMappingMergeFilter(mapping); err != nil {
 		return Command{}, err
 	} else if mergeArg != "" {
 		args = append(args, mergeArg)
@@ -162,6 +162,25 @@ func (b *Backend) BuildCommand(mapping *config.SyncMapping) (Command, error) {
 	}, nil
 }
 
+func writeMappingMergeFilter(mapping *config.SyncMapping) (arg string, path string, err error) {
+	mode := config.FilterModeExclude
+	if mapping != nil {
+		normalized, normErr := config.NormalizeFilterMode(mapping.FilterMode)
+		if normErr != nil {
+			return "", "", normErr
+		}
+		mode = normalized
+	}
+	if mode == config.FilterModeInclude {
+		includes := []string(nil)
+		if mapping != nil {
+			includes = mapping.Includes
+		}
+		return writeFilterFile(includeMergeRules(syncengine.DefaultExcludes(), includes))
+	}
+	return writeManualMergeFilter(syncengine.ExcludesForMapping(mapping))
+}
+
 // writeManualMergeFilter converts gitignore-style exclude lines into an rsync
 // merge filter file. Rules are written in reverse order so rsync first-match
 // approximates git last-match-wins within the manual rule set.
@@ -183,6 +202,67 @@ func writeManualMergeFilter(excludes []string) (arg string, path string, err err
 	}
 	for i, j := 0, len(rules)-1; i < j; i, j = i+1, j-1 {
 		rules[i], rules[j] = rules[j], rules[i]
+	}
+	return writeFilterFile(rules)
+}
+
+func includeMergeRules(defaults, includes []string) []string {
+	rules := make([]string, 0, len(defaults)+len(includes)*4+2)
+	for _, line := range defaults {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		rules = append(rules, "- "+line)
+	}
+	allDirs := false
+	for _, line := range includes {
+		expanded, needDirs := expandIncludeRsync(line)
+		if needDirs {
+			allDirs = true
+		}
+		rules = append(rules, expanded...)
+	}
+	if allDirs {
+		rules = append(rules, "+ */")
+	}
+	rules = append(rules, "- *")
+	return rules
+}
+
+func expandIncludeRsync(line string) (rules []string, allDirs bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return nil, false
+	}
+	if strings.HasPrefix(line, "!") {
+		return []string{"- " + strings.TrimPrefix(line, "!")}, false
+	}
+	pat := strings.TrimPrefix(line, "/")
+	if strings.ContainsAny(pat, "*?[") && !strings.Contains(pat, "/") {
+		return []string{"+ " + pat}, true
+	}
+	trimmed := strings.Trim(pat, "/")
+	if trimmed == "" {
+		return []string{"+ *"}, false
+	}
+	parts := strings.Split(trimmed, "/")
+	acc := ""
+	for _, part := range parts[:len(parts)-1] {
+		acc += "/" + part
+		rules = append(rules, "+ "+acc+"/")
+	}
+	rules = append(rules, "+ /"+trimmed)
+	if strings.HasSuffix(pat, "/") || !strings.ContainsAny(parts[len(parts)-1], "*?[") {
+		rules = append(rules, "+ /"+trimmed+"/")
+		rules = append(rules, "+ /"+trimmed+"/***")
+	}
+	return rules, false
+}
+
+func writeFilterFile(rules []string) (arg string, path string, err error) {
+	if len(rules) == 0 {
+		return "", "", nil
 	}
 	file, err := os.CreateTemp("", "ssh_gun_rsync_filter_*.txt")
 	if err != nil {

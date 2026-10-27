@@ -112,6 +112,43 @@ func TestBuildCommandAddsGitignoreFilter(t *testing.T) {
 	}
 }
 
+func TestBuildCommandIncludeModeFilter(t *testing.T) {
+	backend := New(
+		config.Server{Host: "example.test", User: "alice"},
+		filepath.Join(t.TempDir(), "bin", "rsync.exe"),
+		filepath.Join(t.TempDir(), "ssh_gun.exe"),
+	)
+	mapping := &config.SyncMapping{
+		LocalPath:  `C:\project`,
+		RemotePath: "/srv/project",
+		FilterMode: config.FilterModeInclude,
+		Includes:   []string{"src/", "docs/guide.md"},
+		Excludes:   []string{"src/skip.go"},
+	}
+	command, err := backend.BuildCommand(mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupCommandFiles(command) })
+	body, err := os.ReadFile(command.Cleanup[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "- .git/") || !strings.Contains(got, "+ /src/") || !strings.Contains(got, "+ /src/***") {
+		t.Fatalf("include dir rules missing: %q", got)
+	}
+	if !strings.Contains(got, "+ /docs/") || !strings.Contains(got, "+ /docs/guide.md") {
+		t.Fatalf("include file parent rules missing: %q", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), "- *") {
+		t.Fatalf("include filter should end with exclude-all: %q", got)
+	}
+	if strings.Contains(got, "skip.go") {
+		t.Fatalf("exclude text must not apply in include mode: %q", got)
+	}
+}
+
 func TestPushChangesFallsBackToFullSync(t *testing.T) {
 	runner := &recordingRunner{}
 	backend := New(

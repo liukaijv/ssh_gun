@@ -54,19 +54,40 @@ func IsExcludedVCSPath(relPath string) bool {
 // Manual ignore rules win immediately. Manual directory un-ignore (!dir) still allows
 // disk rules (including exact-path .gitignore lines) to exclude nested files.
 type ExcludeMatcher struct {
-	root     string
-	patterns []string // raw lines (for rsync / callers)
-	manual   pathMatcher
-	disk     pathMatcher
-	literal  *literalPathRules
+	root         string
+	filterMode   string
+	patterns     []string // raw exclude lines applied (defaults [+ mapping excludes])
+	includeLines []string
+	manual       pathMatcher
+	include      pathMatcher
+	disk         pathMatcher
+	literal      *literalPathRules
+}
+
+func mappingFilterMode(mapping *config.SyncMapping) string {
+	if mapping == nil {
+		return config.FilterModeExclude
+	}
+	mode, err := config.NormalizeFilterMode(mapping.FilterMode)
+	if err != nil {
+		return config.FilterModeExclude
+	}
+	return mode
 }
 
 // NewExcludeMatcher builds a matcher for the given mapping.
 func NewExcludeMatcher(mapping *config.SyncMapping) (*ExcludeMatcher, error) {
+	mode := mappingFilterMode(mapping)
+	patterns := DefaultExcludes()
+	if mode != config.FilterModeInclude {
+		patterns = ExcludesForMapping(mapping)
+	}
 	matcher := &ExcludeMatcher{
-		patterns: ExcludesForMapping(mapping),
+		filterMode: mode,
+		patterns:   patterns,
 	}
 	if mapping == nil {
+		matcher.manual = NewManualGitignoreMatcher(matcher.patterns)
 		return matcher, nil
 	}
 	if mapping.LocalPath != "" {
@@ -77,6 +98,10 @@ func NewExcludeMatcher(mapping *config.SyncMapping) (*ExcludeMatcher, error) {
 		}
 	}
 	matcher.manual = NewManualGitignoreMatcher(matcher.patterns)
+	if mode == config.FilterModeInclude {
+		matcher.includeLines = append([]string(nil), mapping.Includes...)
+		matcher.include = NewManualGitignoreMatcher(mapping.Includes)
+	}
 
 	if !mapping.UseGitignore || mapping.LocalPath == "" {
 		return matcher, nil
@@ -137,7 +162,121 @@ func (m *ExcludeMatcher) ShouldSkip(relPath string, isDir bool) bool {
 	if manualDetail.Matched {
 		return manualDetail.Ignored
 	}
+	if m.filterMode == config.FilterModeInclude && !m.includeKeeps(rel, isDir) {
+		return true
+	}
 	return diskSkip
+}
+
+// ShouldPruneDir reports whether a directory can be skipped while walking.
+func (m *ExcludeMatcher) ShouldPruneDir(relPath string) bool {
+	if m == nil {
+		return false
+	}
+	rel := normalizeRel(relPath)
+	if rel == "" {
+		return false
+	}
+	if m.defaultsSkip(rel, true) {
+		return true
+	}
+	if m.filterMode == config.FilterModeInclude {
+		if !m.includeWalkable(rel) {
+			return true
+		}
+		return m.diskShouldSkip(rel, true)
+	}
+	return m.ShouldSkip(rel, true)
+}
+
+func (m *ExcludeMatcher) defaultsSkip(rel string, isDir bool) bool {
+	if m == nil || m.manual == nil {
+		return false
+	}
+	detail := m.manual.MatchDetailPath(rel, isDir)
+	return detail.Matched && detail.Ignored
+}
+
+func (m *ExcludeMatcher) includeKeeps(rel string, isDir bool) bool {
+	if m.matchesInclude(rel, isDir) {
+		return true
+	}
+	parent := rel
+	for {
+		next := path.Dir(parent)
+		if next == "." || next == parent {
+			break
+		}
+		if m.matchesInclude(next, true) {
+			return true
+		}
+		parent = next
+	}
+	return isDir && m.isAncestorOfInclude(rel)
+}
+
+func (m *ExcludeMatcher) includeWalkable(dir string) bool {
+	if m.includeKeeps(dir, true) {
+		return true
+	}
+	return m.isAncestorOfInclude(dir)
+}
+
+func (m *ExcludeMatcher) matchesInclude(rel string, isDir bool) bool {
+	if m.include == nil {
+		return false
+	}
+	if m.include.MatchPath(rel, isDir) {
+		return true
+	}
+	if isDir {
+		return m.include.MatchPath(rel, false)
+	}
+	return m.include.MatchPath(rel, true)
+}
+
+func (m *ExcludeMatcher) isAncestorOfInclude(dir string) bool {
+	dir = normalizeRel(dir)
+	if dir == "" {
+		return false
+	}
+	for _, raw := range m.includeLines {
+		pat := includePattern(raw)
+		if pat == "" {
+			continue
+		}
+		if hasGlobMeta(pat) {
+			slash := strings.LastIndex(pat, "/")
+			if slash < 0 {
+				return true
+			}
+			prefix := strings.Trim(pat[:slash], "/")
+			if hasGlobMeta(prefix) {
+				return true
+			}
+			prefix = normalizeRel(prefix)
+			if prefix == dir || strings.HasPrefix(prefix, dir+"/") {
+				return true
+			}
+			continue
+		}
+		spec := normalizeRel(strings.TrimSuffix(pat, "/"))
+		if spec == dir || strings.HasPrefix(spec, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func includePattern(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return ""
+	}
+	if strings.HasPrefix(line, "!") {
+		return ""
+	}
+	return strings.TrimPrefix(line, "/")
 }
 
 func (m *ExcludeMatcher) diskShouldSkip(rel string, isDir bool) bool {
