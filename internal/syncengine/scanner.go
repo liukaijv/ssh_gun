@@ -6,6 +6,10 @@ import (
 )
 
 func ScanLocal(root string, matcher *ExcludeMatcher) ([]FileEntry, error) {
+	return ScanLocalWithProgress(root, matcher, nil)
+}
+
+func ScanLocalWithProgress(root string, matcher *ExcludeMatcher, onEntry func(FileEntry)) ([]FileEntry, error) {
 	entries := make([]FileEntry, 0)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -37,12 +41,16 @@ func ScanLocal(root string, matcher *ExcludeMatcher) ([]FileEntry, error) {
 		if err != nil {
 			return err
 		}
-		entries = append(entries, FileEntry{
+		item := FileEntry{
 			RelPath: relPath,
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
 			IsDir:   entry.IsDir(),
-		})
+		}
+		entries = append(entries, item)
+		if onEntry != nil {
+			onEntry(item)
+		}
 		return nil
 	})
 	if err != nil {

@@ -1,14 +1,18 @@
 package rsyncbackend
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ssh_gun/internal/config"
@@ -22,6 +26,8 @@ var baseArgs = []string{
 	"--no-owner",
 	"--no-group",
 	"--omit-dir-times",
+	"--info=name1,del1",
+	"--outbuf=L",
 }
 
 type Command struct {
@@ -32,33 +38,93 @@ type Command struct {
 }
 
 type Runner interface {
-	Run(context.Context, Command) error
+	Run(ctx context.Context, command Command, onLine func(string)) error
 }
 
 type execRunner struct{}
 
-func (execRunner) Run(ctx context.Context, command Command) error {
+func (execRunner) Run(ctx context.Context, command Command, onLine func(string)) error {
 	defer cleanupCommandFiles(command)
 	process := exec.CommandContext(ctx, command.Path, command.Args...)
 	process.Env = command.Env
 	configureRsyncCmd(process)
-	output, err := process.CombinedOutput()
+	stdout, err := process.StdoutPipe()
 	if err != nil {
-		message := strings.TrimSpace(string(output))
-		workingDirectory, _ := os.Getwd()
-		diagnostic := fmt.Sprintf(
-			"rsync diagnostic: path=%q argv=%q cwd=%q PATH-prefix=%q",
-			command.Path,
-			command.Args,
-			workingDirectory,
-			filepath.Dir(command.Path),
-		)
-		if message != "" {
-			return fmt.Errorf("%w: %s\n%s", err, message, diagnostic)
-		}
-		return fmt.Errorf("%w: %s", err, diagnostic)
+		return fmt.Errorf("rsync stdout: %w", err)
 	}
-	return nil
+	stderr, err := process.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("rsync stderr: %w", err)
+	}
+	if err := process.Start(); err != nil {
+		return err
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		scanRsyncOutput(stdout, &stdoutBuf, onLine)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&stderrBuf, stderr)
+	}()
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- process.Wait() }()
+	wg.Wait()
+	waitErr := <-waitCh
+	if waitErr == nil {
+		return nil
+	}
+	message := strings.TrimSpace(stdoutBuf.String() + "\n" + stderrBuf.String())
+	workingDirectory, _ := os.Getwd()
+	diagnostic := fmt.Sprintf(
+		"rsync diagnostic: path=%q argv=%q cwd=%q PATH-prefix=%q",
+		command.Path,
+		command.Args,
+		workingDirectory,
+		filepath.Dir(command.Path),
+	)
+	if message != "" {
+		return fmt.Errorf("%w: %s\n%s", waitErr, message, diagnostic)
+	}
+	return fmt.Errorf("%w: %s", waitErr, diagnostic)
+}
+
+func scanRsyncOutput(r io.Reader, buf *bytes.Buffer, onLine func(string)) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if buf != nil {
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+}
+
+func parseRsyncProgressLine(line string) (op syncengine.ChangeOp, rel string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", false
+	}
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "rsync:") || strings.HasPrefix(lower, "rsync error:") {
+		return "", "", false
+	}
+	if strings.HasPrefix(lower, "sent ") || strings.HasPrefix(lower, "total size is") {
+		return "", "", false
+	}
+	if rest, found := strings.CutPrefix(line, "deleting "); found {
+		rest = strings.TrimPrefix(rest, "directory ")
+		return syncengine.Delete, rest, true
+	}
+	return syncengine.Upload, line, true
 }
 
 func cleanupCommandFiles(command Command) {
@@ -293,7 +359,25 @@ func (b *Backend) FullSync(ctx context.Context, mapping *config.SyncMapping, emi
 		return stats, err
 	}
 	defer cleanupCommandFiles(command)
-	if err := b.runner.Run(ctx, command); err != nil {
+	progress := syncengine.NewProgressLog(syncengine.MappingLogName(mapping))
+	progress.Begin("transfer")
+	stopHeartbeat := progress.StartHeartbeat(ctx)
+	defer stopHeartbeat()
+	if err := b.runner.Run(ctx, command, func(line string) {
+		op, rel, ok := parseRsyncProgressLine(line)
+		if !ok {
+			return
+		}
+		if op == syncengine.Delete {
+			stats.Deleted++
+		} else {
+			stats.Files++
+		}
+		progress.Record(op, rel, 0)
+		if emit != nil {
+			emit(syncengine.Event{Op: op, RelPath: rel})
+		}
+	}); err != nil {
 		wrapped := fmt.Errorf("run rsync: %w", err)
 		if emit != nil {
 			emit(syncengine.Event{Err: wrapped})

@@ -64,14 +64,19 @@ func (b *Backend) FullSync(ctx context.Context, mapping *config.SyncMapping, emi
 	if err != nil {
 		return nil, fmt.Errorf("build excludes: %w", err)
 	}
-	local, err := syncengine.ScanLocal(mapping.LocalPath, matcher)
+	progress := syncengine.NewProgressLog(syncengine.MappingLogName(mapping))
+	progress.Begin("scan-local")
+	local, err := syncengine.ScanLocalWithProgress(mapping.LocalPath, matcher, func(entry syncengine.FileEntry) {
+		progress.Tick(entry.RelPath, entry.IsDir)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("scan local: %w", err)
 	}
 	if err := b.sftp.MkdirAll(mapping.RemotePath); err != nil {
 		return nil, fmt.Errorf("create remote root: %w", err)
 	}
-	remote, err := b.listRemote(ctx, mapping, matcher)
+	progress.Begin("scan-remote")
+	remote, err := b.listRemote(ctx, mapping, matcher, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -86,10 +91,14 @@ func (b *Backend) FullSync(ctx context.Context, mapping *config.SyncMapping, emi
 	for _, entry := range diff.Upload {
 		changes = append(changes, changeFromEntry(syncengine.Upload, entry))
 	}
-	return b.PushChanges(ctx, mapping, changes, emit)
+	return b.pushChanges(ctx, mapping, changes, emit, progress)
 }
 
 func (b *Backend) PushChanges(ctx context.Context, mapping *config.SyncMapping, changes []syncengine.Change, emit func(syncengine.Event)) (*syncengine.Stats, error) {
+	return b.pushChanges(ctx, mapping, changes, emit, nil)
+}
+
+func (b *Backend) pushChanges(ctx context.Context, mapping *config.SyncMapping, changes []syncengine.Change, emit func(syncengine.Event), progress *syncengine.ProgressLog) (*syncengine.Stats, error) {
 	if err := validateMapping(mapping); err != nil {
 		return nil, err
 	}
@@ -126,6 +135,11 @@ func (b *Backend) PushChanges(ctx context.Context, mapping *config.SyncMapping, 
 		}
 	}
 
+	if progress == nil {
+		progress = syncengine.NewProgressLog(syncengine.MappingLogName(mapping))
+	}
+	progress.Begin("transfer")
+
 	sort.Slice(deletes, func(i, j int) bool { return pathDepth(deletes[i].RelPath) > pathDepth(deletes[j].RelPath) })
 	for _, change := range deletes {
 		if err := ctx.Err(); err != nil {
@@ -138,6 +152,7 @@ func (b *Backend) PushChanges(ctx context.Context, mapping *config.SyncMapping, 
 			return stats, fmt.Errorf("delete %s: %w", change.RelPath, err)
 		}
 		stats.Deleted++
+		progress.Record(change.Op, change.RelPath, 0)
 		safeEmit(syncengine.Event{Op: change.Op, RelPath: change.RelPath})
 	}
 
@@ -161,10 +176,11 @@ func (b *Backend) PushChanges(ctx context.Context, mapping *config.SyncMapping, 
 			}
 		}
 		stats.Dirs++
+		progress.Record(change.Op, change.RelPath, 0)
 		safeEmit(syncengine.Event{Op: change.Op, RelPath: change.RelPath})
 	}
 
-	if err := b.uploadAll(ctx, mapping, uploads, stats, safeEmit); err != nil {
+	if err := b.uploadAll(ctx, mapping, uploads, stats, safeEmit, progress); err != nil {
 		return stats, err
 	}
 	for _, change := range chtimes {
@@ -175,12 +191,13 @@ func (b *Backend) PushChanges(ctx context.Context, mapping *config.SyncMapping, 
 		if err := b.sftp.Chtimes(remote, change.ModTime, change.ModTime); err != nil {
 			return stats, fmt.Errorf("chtimes %s: %w", change.RelPath, err)
 		}
+		progress.Record(change.Op, change.RelPath, 0)
 		safeEmit(syncengine.Event{Op: change.Op, RelPath: change.RelPath})
 	}
 	return stats, nil
 }
 
-func (b *Backend) uploadAll(ctx context.Context, mapping *config.SyncMapping, changes []syncengine.Change, stats *syncengine.Stats, emit func(syncengine.Event)) error {
+func (b *Backend) uploadAll(ctx context.Context, mapping *config.SyncMapping, changes []syncengine.Change, stats *syncengine.Stats, emit func(syncengine.Event), progress *syncengine.ProgressLog) error {
 	if len(changes) == 0 {
 		return nil
 	}
@@ -199,7 +216,7 @@ func (b *Backend) uploadAll(ctx context.Context, mapping *config.SyncMapping, ch
 		go func() {
 			defer wg.Done()
 			for change := range jobs {
-				bytes, err := b.uploadOne(workCtx, mapping, change, emit)
+				bytes, err := b.uploadOne(workCtx, mapping, change, emit, progress)
 				if err != nil {
 					select {
 					case errs <- err:
@@ -234,7 +251,7 @@ func (b *Backend) uploadAll(ctx context.Context, mapping *config.SyncMapping, ch
 	}
 }
 
-func (b *Backend) uploadOne(ctx context.Context, mapping *config.SyncMapping, change syncengine.Change, emit func(syncengine.Event)) (int64, error) {
+func (b *Backend) uploadOne(ctx context.Context, mapping *config.SyncMapping, change syncengine.Change, emit func(syncengine.Event), progress *syncengine.ProgressLog) (int64, error) {
 	rel, _ := cleanRel(change.RelPath)
 	local := filepath.Join(mapping.LocalPath, filepath.FromSlash(rel))
 	remote, _ := b.remotePath(mapping, rel)
@@ -265,6 +282,7 @@ func (b *Backend) uploadOne(ctx context.Context, mapping *config.SyncMapping, ch
 	}
 	transferred, copyErr := copyWithContext(ctx, target, source, func(written int64) {
 		emit(syncengine.Event{Op: syncengine.Upload, RelPath: rel, Transferred: written, Total: info.Size()})
+		progress.NoteBytes(rel, written)
 	})
 	closeErr := target.Close()
 	if copyErr != nil {
@@ -288,23 +306,30 @@ func (b *Backend) uploadOne(ctx context.Context, mapping *config.SyncMapping, ch
 	if err := b.sftp.Chtimes(remote, modTime, modTime); err != nil {
 		return transferred, fmt.Errorf("chtimes %s: %w", rel, err)
 	}
+	progress.Record(syncengine.Upload, rel, transferred)
 	return transferred, nil
 }
 
-func (b *Backend) listRemote(ctx context.Context, mapping *config.SyncMapping, matcher *syncengine.ExcludeMatcher) ([]syncengine.FileEntry, error) {
+func (b *Backend) listRemote(ctx context.Context, mapping *config.SyncMapping, matcher *syncengine.ExcludeMatcher, progress *syncengine.ProgressLog) ([]syncengine.FileEntry, error) {
 	command := "cd -- " + syncengine.POSIXShellQuote(mapping.RemotePath) +
 		" && find . -mindepth 1 -printf '%y\\t%P\\t%s\\t%T@\\n'"
-	if output, err := sshclient.Exec(ctx, b.ssh, command); err == nil {
+	stop := progress.StartHeartbeat(ctx)
+	output, err := sshclient.Exec(ctx, b.ssh, command)
+	stop()
+	if err == nil {
 		if entries, parseErr := syncengine.ParseFindPrintf(output); parseErr == nil {
-			return filterExcludes(entries, matcher), nil
+			filtered := filterExcludes(entries, matcher)
+			files, dirs, latest := scanTotals(filtered)
+			progress.SetScan(files, dirs, latest)
+			return filtered, nil
 		}
 	} else if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return b.walkRemote(ctx, mapping, matcher)
+	return b.walkRemote(ctx, mapping, matcher, progress)
 }
 
-func (b *Backend) walkRemote(ctx context.Context, mapping *config.SyncMapping, matcher *syncengine.ExcludeMatcher) ([]syncengine.FileEntry, error) {
+func (b *Backend) walkRemote(ctx context.Context, mapping *config.SyncMapping, matcher *syncengine.ExcludeMatcher, progress *syncengine.ProgressLog) ([]syncengine.FileEntry, error) {
 	walker := b.sftp.Walk(mapping.RemotePath)
 	entries := make([]syncengine.FileEntry, 0)
 	for walker.Step() {
@@ -327,6 +352,7 @@ func (b *Backend) walkRemote(ctx context.Context, mapping *config.SyncMapping, m
 		entries = append(entries, syncengine.FileEntry{
 			RelPath: rel, Size: info.Size(), ModTime: info.ModTime(), IsDir: isDir,
 		})
+		progress.Tick(rel, isDir)
 	}
 	return entries, nil
 }
@@ -413,6 +439,18 @@ func changeFromEntry(op syncengine.ChangeOp, entry syncengine.FileEntry) synceng
 	return syncengine.Change{
 		Op: op, RelPath: entry.RelPath, Size: entry.Size, ModTime: entry.ModTime, IsDir: entry.IsDir,
 	}
+}
+
+func scanTotals(entries []syncengine.FileEntry) (files, dirs int, latest string) {
+	for _, entry := range entries {
+		if entry.IsDir {
+			dirs++
+		} else {
+			files++
+		}
+		latest = entry.RelPath
+	}
+	return files, dirs, latest
 }
 
 func filterExcludes(entries []syncengine.FileEntry, matcher *syncengine.ExcludeMatcher) []syncengine.FileEntry {
