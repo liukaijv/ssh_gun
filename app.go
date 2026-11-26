@@ -390,6 +390,46 @@ func (a *App) DeleteSyncMapping(id string) error {
 }
 
 func (a *App) RunFullSync(id string) (map[string]any, error) {
+	return a.runManualSync(id, "manual", a.engine.FullSync)
+}
+
+func (a *App) ListMappingDir(id, rel string) ([]syncengine.BrowseEntry, error) {
+	m, err := a.store.GetSyncMapping(id)
+	if err != nil {
+		return nil, err
+	}
+	matcher, err := syncengine.NewExcludeMatcher(&m)
+	if err != nil {
+		return nil, err
+	}
+	return syncengine.ListLocalDir(m.LocalPath, rel, matcher)
+}
+
+func (a *App) ListMappingChanges(id string) ([]syncengine.BrowseEntry, error) {
+	m, err := a.store.GetSyncMapping(id)
+	if err != nil {
+		return nil, err
+	}
+	matcher, err := syncengine.NewExcludeMatcher(&m)
+	if err != nil {
+		return nil, err
+	}
+	return syncengine.ListGitChanges(m.LocalPath, matcher)
+}
+
+func (a *App) SyncMappingFiles(id string, rels []string) (map[string]any, error) {
+	return a.runManualSync(id, "files", func(ctx context.Context, m *config.SyncMapping) (*syncengine.Stats, error) {
+		return a.engine.SyncFiles(ctx, m, rels)
+	})
+}
+
+func (a *App) SyncMappingPath(id, rel string) (map[string]any, error) {
+	return a.runManualSync(id, "path", func(ctx context.Context, m *config.SyncMapping) (*syncengine.Stats, error) {
+		return a.engine.SyncDirectory(ctx, m, rel)
+	})
+}
+
+func (a *App) SyncMappingChanges(id, rel string) (map[string]any, error) {
 	m, err := a.store.GetSyncMapping(id)
 	if err != nil {
 		return nil, err
@@ -397,9 +437,41 @@ func (a *App) RunFullSync(id string) (map[string]any, error) {
 	if !m.Enabled {
 		return nil, fmt.Errorf("sync mapping is disabled")
 	}
-	a.log.Info("sync start", "mapping", m.Name, "trigger", "manual", "backend", a.store.SyncBackend())
+	matcher, err := syncengine.NewExcludeMatcher(&m)
+	if err != nil {
+		return nil, err
+	}
+	clean, err := syncengine.CleanRel(rel)
+	if err != nil {
+		return nil, err
+	}
+	if matcher.ShouldSkip(clean, true) {
+		return nil, fmt.Errorf("directory is excluded")
+	}
+	entries, err := syncengine.ListGitChanges(m.LocalPath, matcher)
+	if err != nil {
+		return nil, err
+	}
+	files := syncengine.ChangedFilesUnder(entries, clean)
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no syncable changes under %s", clean)
+	}
+	return a.runManualSync(id, "changes", func(ctx context.Context, current *config.SyncMapping) (*syncengine.Stats, error) {
+		return a.engine.SyncFiles(ctx, current, files)
+	})
+}
+
+func (a *App) runManualSync(id, trigger string, run func(context.Context, *config.SyncMapping) (*syncengine.Stats, error)) (map[string]any, error) {
+	m, err := a.store.GetSyncMapping(id)
+	if err != nil {
+		return nil, err
+	}
+	if !m.Enabled {
+		return nil, fmt.Errorf("sync mapping is disabled")
+	}
+	a.log.Info("sync start", "mapping", m.Name, "trigger", trigger, "backend", a.store.SyncBackend())
 	start := time.Now()
-	stats, err := a.engine.FullSync(a.ctx, &m)
+	stats, err := run(a.ctx, &m)
 	result := "ok"
 	errMsg := ""
 	if err != nil {
@@ -409,16 +481,20 @@ func (a *App) RunFullSync(id string) (map[string]any, error) {
 		} else {
 			result = "failed"
 			errMsg = err.Error()
-			a.log.Error("sync failed", "mapping", m.Name, "backend", a.store.SyncBackend(), "err", err)
+			a.log.Error("sync failed", "mapping", m.Name, "trigger", trigger, "backend", a.store.SyncBackend(), "err", err)
 		}
 	} else {
+		files, deleted, bytes := 0, 0, int64(0)
+		if stats != nil {
+			files, deleted, bytes = stats.Files, stats.Deleted, stats.Bytes
+		}
 		a.log.Info("sync end",
 			"mapping", m.Name,
-			"trigger", "manual",
+			"trigger", trigger,
 			"backend", a.store.SyncBackend(),
-			"files", stats.Files,
-			"deleted", stats.Deleted,
-			"bytes", stats.Bytes,
+			"files", files,
+			"deleted", deleted,
+			"bytes", bytes,
 			"dur", time.Since(start).String(),
 		)
 	}

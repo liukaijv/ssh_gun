@@ -50,6 +50,14 @@ export function ListManagedProcesses() {
   return window['go']['main']['App']['ListManagedProcesses']();
 }
 
+export function ListMappingChanges(arg1) {
+  return window['go']['main']['App']['ListMappingChanges'](arg1);
+}
+
+export function ListMappingDir(arg1, arg2) {
+  return window['go']['main']['App']['ListMappingDir'](arg1, arg2);
+}
+
 export function ListPortForwards() {
   return window['go']['main']['App']['ListPortForwards']();
 }
@@ -120,6 +128,18 @@ export function StopManagedProcess(arg1) {
 
 export function StopPortForward(arg1) {
   return window['go']['main']['App']['StopPortForward'](arg1);
+}
+
+export function SyncMappingChanges(arg1, arg2) {
+  return window['go']['main']['App']['SyncMappingChanges'](arg1, arg2);
+}
+
+export function SyncMappingFiles(arg1, arg2) {
+  return window['go']['main']['App']['SyncMappingFiles'](arg1, arg2);
+}
+
+export function SyncMappingPath(arg1, arg2) {
+  return window['go']['main']['App']['SyncMappingPath'](arg1, arg2);
 }
 
 export function TestServerConnection(arg1) {

@@ -15,6 +15,11 @@ const router = createRouter({
       component: () => import('@/views/Mappings.vue'),
     },
     {
+      path: '/mappings/:id/files',
+      name: 'mapping-files',
+      component: () => import('@/views/MappingFiles.vue'),
+    },
+    {
       path: '/forwards',
       name: 'forwards',
       component: () => import('@/views/Forwards.vue'),

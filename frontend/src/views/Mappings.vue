@@ -22,6 +22,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import {useI18n} from 'vue-i18n'
+import {useRouter} from 'vue-router'
 import {
   DeleteSyncMapping,
   ListServers,
@@ -35,6 +36,7 @@ import {canSaveMappingForm} from './mappingForm'
 
 const message = useMessage()
 const dialog = useDialog()
+const router = useRouter()
 const {t} = useI18n()
 const rows = ref<any[]>([])
 const servers = ref<{ label: string; value: string }[]>([])
@@ -144,11 +146,16 @@ const columns = computed<DataTableColumns<any>>(() => [
   {
     title: t('common.actions'),
     key: 'actions',
-    width: 220,
+    width: 280,
     render: (r) => {
       const syncing = syncingIds.value.has(r.ID)
       return h(NSpace, {size: 6}, {
         default: () => [
+          h(NButton, {
+            size: 'tiny',
+            secondary: true,
+            onClick: () => router.push({name: 'mapping-files', params: {id: r.ID}}),
+          }, {default: () => t('mappings.browse')}),
           h(NButton, {
             size: 'tiny',
             secondary: true,

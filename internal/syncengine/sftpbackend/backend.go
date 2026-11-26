@@ -76,7 +76,7 @@ func (b *Backend) FullSync(ctx context.Context, mapping *config.SyncMapping, emi
 		return nil, fmt.Errorf("create remote root: %w", err)
 	}
 	progress.Begin("scan-remote")
-	remote, err := b.listRemote(ctx, mapping, matcher, progress)
+	remote, err := b.listRemote(ctx, mapping, "", matcher, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +96,146 @@ func (b *Backend) FullSync(ctx context.Context, mapping *config.SyncMapping, emi
 
 func (b *Backend) PushChanges(ctx context.Context, mapping *config.SyncMapping, changes []syncengine.Change, emit func(syncengine.Event)) (*syncengine.Stats, error) {
 	return b.pushChanges(ctx, mapping, changes, emit, nil)
+}
+
+// SyncFiles uploads exactly the selected local files, including files that the
+// mapping excludes. It never deletes anything on the remote.
+func (b *Backend) SyncFiles(ctx context.Context, mapping *config.SyncMapping, rels []string, emit func(syncengine.Event)) (*syncengine.Stats, error) {
+	if err := validateMapping(mapping); err != nil {
+		return nil, err
+	}
+	if len(rels) == 0 {
+		return nil, errors.New("no files to sync")
+	}
+	stats := &syncengine.Stats{Started: time.Now()}
+	defer func() { stats.Finished = time.Now() }()
+	type pendingFile struct {
+		clean string
+		info  os.FileInfo
+	}
+	pending := make([]pendingFile, 0, len(rels))
+	seen := map[string]struct{}{}
+	for _, rel := range rels {
+		if err := ctx.Err(); err != nil {
+			return stats, err
+		}
+		clean, err := cleanRel(rel)
+		if err != nil {
+			return stats, err
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		if syncengine.IsExcludedVCSPath(clean) {
+			return stats, fmt.Errorf("refusing VCS path %s", clean)
+		}
+		if err := checkLocalAncestors(mapping.LocalPath, clean); err != nil {
+			return stats, err
+		}
+		local := filepath.Join(mapping.LocalPath, filepath.FromSlash(clean))
+		info, err := os.Lstat(local)
+		if err != nil {
+			return stats, err
+		}
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || syncengine.IsLocalReparsePoint(local) {
+			return stats, fmt.Errorf("%s is not a file", clean)
+		}
+		pending = append(pending, pendingFile{clean: clean, info: info})
+	}
+	progress := syncengine.NewProgressLog(syncengine.MappingLogName(mapping))
+	safeEmit := serializedEmitter(emit)
+	for _, item := range pending {
+		if err := ctx.Err(); err != nil {
+			return stats, err
+		}
+		change := syncengine.Change{Op: syncengine.Upload, RelPath: item.clean, Size: item.info.Size(), ModTime: item.info.ModTime()}
+		written, err := b.uploadOne(ctx, mapping, change, safeEmit, progress)
+		if err != nil {
+			return stats, err
+		}
+		stats.Files++
+		stats.Bytes += written
+	}
+	return stats, nil
+}
+
+// SyncDirectory uploads the missing or changed, non-excluded entries inside
+// one local directory. It never deletes anything on the remote.
+func (b *Backend) SyncDirectory(ctx context.Context, mapping *config.SyncMapping, rel string, emit func(syncengine.Event)) (*syncengine.Stats, error) {
+	if err := validateMapping(mapping); err != nil {
+		return nil, err
+	}
+	clean, err := cleanRel(rel)
+	if err != nil {
+		return nil, err
+	}
+	matcher, err := syncengine.NewExcludeMatcher(mapping)
+	if err != nil {
+		return nil, fmt.Errorf("build excludes: %w", err)
+	}
+	if matcher.ShouldSkip(clean, true) || syncengine.IsExcludedVCSPath(clean) {
+		return nil, fmt.Errorf("directory %s is excluded", clean)
+	}
+	if err := checkLocalAncestors(mapping.LocalPath, clean); err != nil {
+		return nil, err
+	}
+	local := filepath.Join(mapping.LocalPath, filepath.FromSlash(clean))
+	info, err := os.Lstat(local)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || syncengine.IsLocalReparsePoint(local) {
+		return nil, fmt.Errorf("%s is not a directory", clean)
+	}
+	scoped, err := syncengine.ScanSubtree(mapping.LocalPath, clean, matcher)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.sftp.MkdirAll(mapping.RemotePath); err != nil {
+		return nil, fmt.Errorf("create remote root: %w", err)
+	}
+	remote, err := b.listRemote(ctx, mapping, clean, matcher, syncengine.NewProgressLog(syncengine.MappingLogName(mapping)))
+	if err != nil {
+		return nil, err
+	}
+	diff := syncengine.Diff(scoped, remote, mapping.CompareMode, time.Second)
+	changes := make([]syncengine.Change, 0, len(diff.Mkdir)+len(diff.Upload))
+	for _, entry := range diff.Mkdir {
+		changes = append(changes, changeFromEntry(syncengine.Mkdir, entry))
+	}
+	for _, entry := range diff.Upload {
+		changes = append(changes, changeFromEntry(syncengine.Upload, entry))
+	}
+	if len(changes) == 0 {
+		remoteDir, err := b.remotePath(mapping, clean)
+		if err != nil {
+			return nil, err
+		}
+		if err := b.sftp.MkdirAll(remoteDir); err != nil {
+			return nil, err
+		}
+		return &syncengine.Stats{Started: time.Now(), Finished: time.Now()}, nil
+	}
+	return b.pushChanges(ctx, mapping, changes, emit, nil)
+}
+
+// checkLocalAncestors rejects paths that traverse a symlink or reparse point
+// below the mapping root.
+func checkLocalAncestors(root, rel string) error {
+	parts := strings.Split(rel, "/")
+	cur := root
+	for i := 0; i < len(parts)-1; i++ {
+		cur = filepath.Join(cur, parts[i])
+		info, err := os.Lstat(cur)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || syncengine.IsLocalReparsePoint(cur) {
+			return fmt.Errorf("%s has a non-directory ancestor", rel)
+		}
+	}
+	return nil
 }
 
 func (b *Backend) pushChanges(ctx context.Context, mapping *config.SyncMapping, changes []syncengine.Change, emit func(syncengine.Event), progress *syncengine.ProgressLog) (*syncengine.Stats, error) {
@@ -310,14 +450,41 @@ func (b *Backend) uploadOne(ctx context.Context, mapping *config.SyncMapping, ch
 	return transferred, nil
 }
 
-func (b *Backend) listRemote(ctx context.Context, mapping *config.SyncMapping, matcher *syncengine.ExcludeMatcher, progress *syncengine.ProgressLog) ([]syncengine.FileEntry, error) {
-	command := "cd -- " + syncengine.POSIXShellQuote(mapping.RemotePath) +
+// listRemote lists remote entries relative to the mapping root.
+// under limits the listing to that remote subdirectory. An empty under
+// lists the whole mapping. A missing subdirectory is an empty listing.
+func (b *Backend) listRemote(ctx context.Context, mapping *config.SyncMapping, under string, matcher *syncengine.ExcludeMatcher, progress *syncengine.ProgressLog) ([]syncengine.FileEntry, error) {
+	start := mapping.RemotePath
+	prefix := ""
+	if under != "" {
+		clean, err := cleanRel(under)
+		if err != nil {
+			return nil, err
+		}
+		start, err = b.remotePath(mapping, clean)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := b.sftp.Stat(start); err != nil {
+			if isNotExist(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		prefix = clean + "/"
+	}
+	command := "cd -- " + syncengine.POSIXShellQuote(start) +
 		" && find . -mindepth 1 -printf '%y\\t%P\\t%s\\t%T@\\n'"
 	stop := progress.StartHeartbeat(ctx)
 	output, err := sshclient.Exec(ctx, b.ssh, command)
 	stop()
 	if err == nil {
 		if entries, parseErr := syncengine.ParseFindPrintf(output); parseErr == nil {
+			if prefix != "" {
+				for i := range entries {
+					entries[i].RelPath = prefix + entries[i].RelPath
+				}
+			}
 			filtered := filterExcludes(entries, matcher)
 			files, dirs, latest := scanTotals(filtered)
 			progress.SetScan(files, dirs, latest)
@@ -326,11 +493,11 @@ func (b *Backend) listRemote(ctx context.Context, mapping *config.SyncMapping, m
 	} else if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return b.walkRemote(ctx, mapping, matcher, progress)
+	return b.walkRemote(ctx, start, prefix, matcher, progress)
 }
 
-func (b *Backend) walkRemote(ctx context.Context, mapping *config.SyncMapping, matcher *syncengine.ExcludeMatcher, progress *syncengine.ProgressLog) ([]syncengine.FileEntry, error) {
-	walker := b.sftp.Walk(mapping.RemotePath)
+func (b *Backend) walkRemote(ctx context.Context, start, prefix string, matcher *syncengine.ExcludeMatcher, progress *syncengine.ProgressLog) ([]syncengine.FileEntry, error) {
+	walker := b.sftp.Walk(start)
 	entries := make([]syncengine.FileEntry, 0)
 	for walker.Step() {
 		if err := ctx.Err(); err != nil {
@@ -339,11 +506,14 @@ func (b *Backend) walkRemote(ctx context.Context, mapping *config.SyncMapping, m
 		if err := walker.Err(); err != nil {
 			return nil, fmt.Errorf("walk remote: %w", err)
 		}
-		rel := remoteRel(mapping.RemotePath, walker.Path())
+		rel := remoteRel(start, walker.Path())
 		if rel == "." || rel == "" {
 			continue
 		}
 		rel = strings.TrimPrefix(rel, "./")
+		if prefix != "" {
+			rel = prefix + rel
+		}
 		info := walker.Stat()
 		isDir := info != nil && info.IsDir()
 		if matcher != nil && matcher.ShouldSkip(rel, isDir) {

@@ -234,3 +234,28 @@ export namespace procman {
 
 }
 
+export namespace syncengine {
+	
+	export class BrowseEntry {
+	    name: string;
+	    relPath: string;
+	    isDir: boolean;
+	    skipped: boolean;
+	    status?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BrowseEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.relPath = source["relPath"];
+	        this.isDir = source["isDir"];
+	        this.skipped = source["skipped"];
+	        this.status = source["status"];
+	    }
+	}
+
+}
+

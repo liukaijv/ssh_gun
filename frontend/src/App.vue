@@ -31,7 +31,10 @@ const { t, locale } = useI18n()
 const localeStore = useLocaleStore()
 const themeStore = useThemeStore()
 
-const activeKey = computed(() => String(route.name ?? 'servers'))
+const activeKey = computed(() => {
+  const name = String(route.name ?? 'servers')
+  return name === 'mapping-files' ? 'mappings' : name
+})
 const naiveTheme = computed(() => (themeStore.effective === 'dark' ? darkTheme : null))
 
 function renderIcon(icon: typeof ServerOutline) {

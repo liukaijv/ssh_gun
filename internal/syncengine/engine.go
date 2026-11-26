@@ -229,6 +229,39 @@ func (e *Engine) FullSync(ctx context.Context, mapping *config.SyncMapping) (*St
 	return backend.FullSync(ctx, mapping, e.emit)
 }
 
+// SyncFiles synchronizes the given relative paths for a mapping.
+func (e *Engine) SyncFiles(ctx context.Context, mapping *config.SyncMapping, rels []string) (*Stats, error) {
+	return e.withMappingSync(ctx, mapping, func(backend Backend) (*Stats, error) {
+		return backend.SyncFiles(ctx, mapping, rels, e.emit)
+	})
+}
+
+// SyncDirectory synchronizes one relative directory for a mapping.
+func (e *Engine) SyncDirectory(ctx context.Context, mapping *config.SyncMapping, rel string) (*Stats, error) {
+	return e.withMappingSync(ctx, mapping, func(backend Backend) (*Stats, error) {
+		return backend.SyncDirectory(ctx, mapping, rel, e.emit)
+	})
+}
+
+func (e *Engine) withMappingSync(ctx context.Context, mapping *config.SyncMapping, run func(Backend) (*Stats, error)) (*Stats, error) {
+	if mapping == nil {
+		return nil, errors.New("sync mapping is required")
+	}
+	if mapping.ID == "" {
+		return nil, errors.New("sync mapping ID is required")
+	}
+	if err := e.beginSync(mapping.ID); err != nil {
+		return nil, err
+	}
+	defer e.endSync(mapping.ID)
+	backend, owned, err := e.resolveBackend(ctx, mapping)
+	if err != nil {
+		return nil, err
+	}
+	defer closeOwnedBackend(backend, owned)
+	return run(backend)
+}
+
 func (e *Engine) beginSync(id string) error {
 	e.syncMu.Lock()
 	defer e.syncMu.Unlock()

@@ -4,3 +4,5 @@ frontend/dist
 .idea
 ssh_gun.exe
 test
+.superpowers/
+docs/

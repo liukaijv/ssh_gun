@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -289,5 +290,195 @@ func assertNotExist(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("%s still exists (err=%v)", path, err)
+	}
+}
+
+func TestSyncFiles_UploadsGrayFileAndKeepsRemoteExtra(t *testing.T) {
+	local, remote, backend := newBackend(t, nil)
+	writeLocal(t, local, "skip.txt", []byte("forced"))
+	writeRemote(t, remote, "other.txt", []byte("stay"))
+	m := mapping(local)
+	m.Excludes = []string{"skip.txt"}
+	m.DeleteExtra = true
+
+	stats, err := backend.SyncFiles(context.Background(), m, []string{"skip.txt"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 1 || stats.Deleted != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	got, err := os.ReadFile(filepath.Join(remote, "skip.txt"))
+	if err != nil || string(got) != "forced" {
+		t.Fatalf("upload = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "other.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncDirectory_SkipsGrayAndKeepsRemoteExtra(t *testing.T) {
+	local, remote, backend := newBackend(t, nil)
+	writeLocal(t, local, "dir/keep.txt", []byte("keep"))
+	writeLocal(t, local, "dir/skip.txt", []byte("no"))
+	writeRemote(t, remote, "dir/old.txt", []byte("old"))
+	m := mapping(local)
+	m.Excludes = []string{"skip.txt"}
+	m.DeleteExtra = true
+
+	stats, err := backend.SyncDirectory(context.Background(), m, "dir", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Deleted != 0 {
+		t.Fatalf("deleted = %d", stats.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "dir", "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+	assertNotExist(t, filepath.Join(remote, "dir", "skip.txt"))
+	if _, err := os.Stat(filepath.Join(remote, "dir", "old.txt")); err != nil {
+		t.Fatal("remote extra was deleted")
+	}
+	if _, err := backend.SyncDirectory(context.Background(), m, "missing", nil); err == nil {
+		t.Fatal("missing directory must fail")
+	}
+}
+
+func TestSyncFiles_RejectsDirectoryBeforeUpload(t *testing.T) {
+	local, remote, backend := newBackend(t, nil)
+	writeLocal(t, local, "a.txt", []byte("a"))
+	if err := os.MkdirAll(filepath.Join(local, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRemote(t, remote, "stay.txt", []byte("stay"))
+
+	_, err := backend.SyncFiles(context.Background(), mapping(local), []string{"a.txt", "sub"}, nil)
+	if err == nil {
+		t.Fatal("a directory in the file list must be rejected")
+	}
+	assertNotExist(t, filepath.Join(remote, "a.txt"))
+	if _, err := os.Stat(filepath.Join(remote, "stay.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncFiles_UploadsGrayFileUnderExcludedParent(t *testing.T) {
+	local, remote, backend := newBackend(t, nil)
+	writeLocal(t, local, "build/forced.txt", []byte("forced"))
+	writeLocal(t, local, "build/other.txt", []byte("other"))
+	m := mapping(local)
+	m.Excludes = []string{"build/"}
+
+	if _, err := backend.SyncFiles(context.Background(), m, []string{"keep.txt", "build/forced.txt"}, nil); err == nil {
+		t.Fatal("missing keep.txt must fail before any upload")
+	}
+	assertNotExist(t, filepath.Join(remote, "build", "forced.txt"))
+
+	writeLocal(t, local, "plain.txt", []byte("plain"))
+	stats, err := backend.SyncFiles(context.Background(), m, []string{"build/forced.txt", "plain.txt"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 2 || stats.Deleted != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	got, err := os.ReadFile(filepath.Join(remote, "build", "forced.txt"))
+	if err != nil || string(got) != "forced" {
+		t.Fatalf("forced = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "plain.txt")); err != nil {
+		t.Fatal(err)
+	}
+	assertNotExist(t, filepath.Join(remote, "build", "other.txt"))
+}
+
+func TestSyncDirectory_RejectsExcludedDirectory(t *testing.T) {
+	local, _, backend := newBackend(t, nil)
+	if err := os.MkdirAll(filepath.Join(local, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := mapping(local)
+	m.Excludes = []string{"build/"}
+	if _, err := backend.SyncDirectory(context.Background(), m, "build", nil); err == nil {
+		t.Fatal("excluded directory must be rejected")
+	}
+}
+
+func TestSyncDirectory_UploadsWhenRemoteSubdirMissing(t *testing.T) {
+	local, remote, backend := newBackend(t, nil)
+	writeLocal(t, local, "dir/keep.txt", []byte("keep"))
+	writeRemote(t, remote, "sibling.txt", []byte("stay"))
+	m := mapping(local)
+	m.DeleteExtra = true
+
+	if _, err := backend.SyncDirectory(context.Background(), m, "dir", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(remote, "dir", "keep.txt"))
+	if err != nil || string(got) != "keep" {
+		t.Fatalf("keep = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "sibling.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncChanges_UploadsOnlyNonGrayChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	local, remote, backend := newBackend(t, nil)
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = local
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init")
+	writeLocal(t, local, "dir/changed.txt", []byte("old"))
+	writeLocal(t, local, "dir/same.txt", []byte("untouched"))
+	git("add", ".")
+	git("commit", "-m", "init")
+	writeLocal(t, local, "dir/changed.txt", []byte("new"))
+	writeLocal(t, local, "dir/skip.txt", []byte("gray"))
+	writeRemote(t, remote, "dir/extra.txt", []byte("stay"))
+	m := mapping(local)
+	m.Excludes = []string{"skip.txt"}
+	m.DeleteExtra = true
+	matcher, err := syncengine.NewExcludeMatcher(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := syncengine.ListGitChanges(local, matcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := syncengine.ChangedFilesUnder(entries, "dir")
+	if len(files) != 1 || files[0] != "dir/changed.txt" {
+		t.Fatalf("changed files = %#v", files)
+	}
+	stats, err := backend.SyncFiles(context.Background(), m, files, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Deleted != 0 {
+		t.Fatalf("deleted = %d", stats.Deleted)
+	}
+	got, err := os.ReadFile(filepath.Join(remote, "dir", "changed.txt"))
+	if err != nil || string(got) != "new" {
+		t.Fatalf("changed = %q, %v", got, err)
+	}
+	assertNotExist(t, filepath.Join(remote, "dir", "same.txt"))
+	assertNotExist(t, filepath.Join(remote, "dir", "skip.txt"))
+	if _, err := os.Stat(filepath.Join(remote, "dir", "extra.txt")); err != nil {
+		t.Fatal(err)
 	}
 }

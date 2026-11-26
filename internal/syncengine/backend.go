@@ -45,4 +45,6 @@ type Backend interface {
 	Name() string
 	FullSync(ctx context.Context, mapping *config.SyncMapping, emit func(Event)) (*Stats, error)
 	PushChanges(ctx context.Context, mapping *config.SyncMapping, changes []Change, emit func(Event)) (*Stats, error)
+	SyncFiles(ctx context.Context, mapping *config.SyncMapping, rels []string, emit func(Event)) (*Stats, error)
+	SyncDirectory(ctx context.Context, mapping *config.SyncMapping, rel string, emit func(Event)) (*Stats, error)
 }

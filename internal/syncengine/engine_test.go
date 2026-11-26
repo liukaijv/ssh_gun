@@ -58,6 +58,60 @@ func TestEngine_FullSyncRejectsConcurrentManualSync(t *testing.T) {
 	<-done
 }
 
+func TestEngine_SyncFilesRejectsSecondCall(t *testing.T) {
+	backend := newRecordingBackend()
+	backend.blockFiles = make(chan struct{})
+	engine := NewEngine(backend)
+	mapping := testMapping(t, "files")
+	done := make(chan struct{})
+	go func() {
+		_, _ = engine.SyncFiles(context.Background(), mapping, []string{"a.txt"})
+		close(done)
+	}()
+	select {
+	case got := <-backend.fileCalls:
+		if len(got) != 1 || got[0] != "a.txt" {
+			t.Fatalf("files = %#v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out")
+	}
+	_, err := engine.SyncDirectory(context.Background(), mapping, "dir")
+	if !errors.Is(err, ErrSyncInProgress) {
+		t.Fatalf("err = %v", err)
+	}
+	close(backend.blockFiles)
+	<-done
+}
+
+func TestEngine_FullSyncRejectsBrowseSync(t *testing.T) {
+	backend := newRecordingBackend()
+	backend.blockFullSync = make(chan struct{})
+	engine := NewEngine(backend)
+	mapping := testMapping(t, "browse-busy")
+	mapping.ID = "map-busy"
+
+	done := make(chan struct{})
+	go func() {
+		_, err := engine.FullSync(context.Background(), mapping)
+		if err != nil {
+			t.Errorf("FullSync: %v", err)
+		}
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if _, err := engine.SyncFiles(context.Background(), mapping, []string{"a.txt"}); !errors.Is(err, ErrSyncInProgress) {
+		t.Fatalf("SyncFiles during FullSync err = %v, want ErrSyncInProgress", err)
+	}
+	if _, err := engine.SyncDirectory(context.Background(), mapping, "dir"); !errors.Is(err, ErrSyncInProgress) {
+		t.Fatalf("SyncDirectory during FullSync err = %v, want ErrSyncInProgress", err)
+	}
+
+	close(backend.blockFullSync)
+	<-done
+}
+
 func TestEngine_FullSyncRejectsWhileAutoPushRunning(t *testing.T) {
 	backend := newRecordingBackend()
 	backend.blockFirst = make(chan struct{})
@@ -283,12 +337,15 @@ type recordingBackend struct {
 	blockFirst    chan struct{}
 	blockFullSync chan struct{}
 	cancelOnce    sync.Once
+	fileCalls     chan []string
+	blockFiles    chan struct{}
 }
 
 func newRecordingBackend() *recordingBackend {
 	return &recordingBackend{
-		calls:    make(chan []Change, 10),
-		canceled: make(chan struct{}),
+		calls:     make(chan []Change, 10),
+		canceled:  make(chan struct{}),
+		fileCalls: make(chan []string, 10),
 	}
 }
 
@@ -316,6 +373,25 @@ func (b *recordingBackend) PushChanges(ctx context.Context, _ *config.SyncMappin
 			return nil, ctx.Err()
 		}
 	}
+	return &Stats{}, nil
+}
+
+func (b *recordingBackend) SyncFiles(ctx context.Context, _ *config.SyncMapping, rels []string, _ func(Event)) (*Stats, error) {
+	copied := append([]string(nil), rels...)
+	if b.fileCalls != nil {
+		b.fileCalls <- copied
+	}
+	if b.blockFiles != nil {
+		select {
+		case <-b.blockFiles:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return &Stats{Files: len(rels)}, nil
+}
+
+func (b *recordingBackend) SyncDirectory(context.Context, *config.SyncMapping, string, func(Event)) (*Stats, error) {
 	return &Stats{}, nil
 }
 

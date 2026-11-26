@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ssh_gun/internal/config"
+	"ssh_gun/internal/rsyncbin"
 	"ssh_gun/internal/syncengine"
 )
 
@@ -212,6 +213,7 @@ func TestParseRsyncProgressLine(t *testing.T) {
 		{line: "rsync: connection unexpectedly closed", ok: false},
 		{line: "sent 123 bytes  received 45 bytes  1.00 bytes/sec", ok: false},
 		{line: "total size is 999", ok: false},
+		{line: `skipping non-regular file "dir/link"`, ok: false},
 		{line: "", ok: false},
 		{line: "   ", ok: false},
 	}
@@ -318,6 +320,220 @@ func (r *scriptedRunner) Run(_ context.Context, _ Command, onLine func(string)) 
 		}
 	}
 	return nil
+}
+
+func TestBuildScopedCommandNeverDeletes(t *testing.T) {
+	backend := New(config.Server{Host: "h", User: "u"}, filepath.Join(t.TempDir(), "rsync.exe"), filepath.Join(t.TempDir(), "ssh_gun.exe"))
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, "src", "api"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapping := &config.SyncMapping{
+		LocalPath:    projectDir,
+		RemotePath:   "/opt/project",
+		Excludes:     []string{"*.log"},
+		UseGitignore: true,
+		DeleteExtra:  true,
+	}
+	command, err := backend.BuildScopedCommand(mapping, "src/api", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupCommandFiles(command) })
+	if slices.Contains(command.Args, "--delete") || slices.Contains(command.Args, "--delete-excluded") {
+		t.Fatalf("delete flag present: %#v", command.Args)
+	}
+	if slices.Contains(command.Args, "-rltz") || !slices.Contains(command.Args, "--no-links") || !slices.Contains(command.Args, "-rtz") {
+		t.Fatalf("scoped sync must skip symlinks: %#v", command.Args)
+	}
+	joined := strings.Join(command.Args, "\n")
+	parents := strings.Index(joined, "+ /src/")
+	merge := strings.Index(joined, "--filter=merge ")
+	ignore := strings.Index(joined, "--filter=:- .gitignore")
+	includeAll := strings.Index(joined, "+ /src/api/***")
+	block := strings.Index(joined, "- *")
+	if parents < 0 || merge < 0 || ignore < 0 || includeAll < 0 || block < 0 {
+		t.Fatalf("missing filter marker (parents=%d merge=%d ignore=%d includeAll=%d block=%d):\n%s", parents, merge, ignore, includeAll, block, joined)
+	}
+	if merge < parents || ignore < merge || includeAll < ignore || block < includeAll {
+		t.Fatalf("filter order:\n%s", joined)
+	}
+
+	localDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(localDir, "skip.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileMapping := *mapping
+	fileMapping.LocalPath = localDir
+	files, err := backend.BuildScopedCommand(&fileMapping, "", []string{"skip.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupCommandFiles(files) })
+	fileJoined := strings.Join(files.Args, "\n")
+	fileInclude := strings.Index(fileJoined, "+ /skip.txt")
+	fileMerge := strings.Index(fileJoined, "--filter=merge ")
+	if fileInclude < 0 || fileMerge < 0 || fileInclude > fileMerge {
+		t.Fatalf("file include must precede excludes:\n%s", fileJoined)
+	}
+	if strings.Contains(fileJoined, "--delete") {
+		t.Fatal("file sync added --delete")
+	}
+}
+
+func TestBuildScopedCommandFiltersPrecedePaths(t *testing.T) {
+	backend := New(config.Server{Host: "h", User: "u"}, filepath.Join(t.TempDir(), "rsync.exe"), filepath.Join(t.TempDir(), "ssh_gun.exe"))
+	projectDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectDir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapping := &config.SyncMapping{LocalPath: projectDir, RemotePath: "/opt/project"}
+	command, err := backend.BuildScopedCommand(mapping, "src", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupCommandFiles(command) })
+	n := len(command.Args)
+	if command.Args[n-2] != rsyncbin.Cygpath(projectDir)+"/" || command.Args[n-1] != "u@ignored:/opt/project/" {
+		t.Fatalf("paths not last: %#v", command.Args)
+	}
+	if command.Args[n-3] != "--filter=- *" {
+		t.Fatalf("block-all filter not before paths: %#v", command.Args)
+	}
+}
+
+func TestBuildScopedCommandRejectsInvalidScopes(t *testing.T) {
+	backend := New(config.Server{Host: "h", User: "u"}, filepath.Join(t.TempDir(), "rsync.exe"), filepath.Join(t.TempDir(), "ssh_gun.exe"))
+	local := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(local, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "ok.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(local, "build", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapping := &config.SyncMapping{LocalPath: local, RemotePath: "/r", Excludes: []string{"build/"}}
+	cases := []struct {
+		name  string
+		dir   string
+		files []string
+	}{
+		{"skipped dir", "build", nil},
+		{"child of excluded dir", "build/sub", nil},
+		{"missing dir", "nope", nil},
+		{"regular file as dir", "ok.txt", nil},
+		{"vcs dir", ".git/objects", nil},
+		{"vcs file", "", []string{".git/config"}},
+		{"directory as file", "", []string{"sub"}},
+		{"missing file", "", []string{"nope.txt"}},
+		{"no files", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := backend.BuildScopedCommand(mapping, tc.dir, tc.files); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+	if _, err := backend.BuildScopedCommand(mapping, "", []string{"ok.txt"}); err != nil {
+		t.Fatalf("regular file rejected: %v", err)
+	}
+}
+
+func TestBuildScopedCommandRejectsLinkComponents(t *testing.T) {
+	backend := New(config.Server{Host: "h", User: "u"}, filepath.Join(t.TempDir(), "rsync.exe"), filepath.Join(t.TempDir(), "ssh_gun.exe"))
+	local := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "inner", "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(local, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	mapping := &config.SyncMapping{LocalPath: local, RemotePath: "/r"}
+	if _, err := backend.BuildScopedCommand(mapping, "link", nil); err == nil {
+		t.Fatal("expected symlink leaf directory to be rejected")
+	}
+	if _, err := backend.BuildScopedCommand(mapping, "link/inner", nil); err == nil {
+		t.Fatal("expected directory through symlink component to be rejected")
+	}
+	if _, err := backend.BuildScopedCommand(mapping, "", []string{"link/inner/f.txt"}); err == nil {
+		t.Fatal("expected file through symlink component to be rejected")
+	}
+}
+
+func TestBuildScopedCommandEscapesRsyncGlobCharacters(t *testing.T) {
+	backend := New(config.Server{Host: "h", User: "u"}, filepath.Join(t.TempDir(), "rsync.exe"), filepath.Join(t.TempDir(), "ssh_gun.exe"))
+	local := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(local, "d[1]"), 0o755); err != nil {
+		t.Skipf("cannot create bracket directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "a[1].txt"), []byte("x"), 0o644); err != nil {
+		t.Skipf("cannot create bracket file: %v", err)
+	}
+	mapping := &config.SyncMapping{LocalPath: local, RemotePath: "/r"}
+
+	files, err := backend.BuildScopedCommand(mapping, "", []string{"a[1].txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupCommandFiles(files) })
+	if !slices.Contains(files.Args, `--filter=+ /a\[1].txt`) {
+		t.Fatalf("missing escaped file rule: %#v", files.Args)
+	}
+	if slices.Contains(files.Args, `--filter=+ /a[1].txt`) {
+		t.Fatalf("unescaped file rule present: %#v", files.Args)
+	}
+
+	dir, err := backend.BuildScopedCommand(mapping, "d[1]", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupCommandFiles(dir) })
+	for _, want := range []string{`--filter=+ /d\[1]/`, `--filter=+ /d\[1]/***`} {
+		if !slices.Contains(dir.Args, want) {
+			t.Fatalf("missing %q in %#v", want, dir.Args)
+		}
+	}
+}
+
+func TestEscapeRsyncPattern(t *testing.T) {
+	if got := escapeRsyncPattern(`a\b*c?d[e]`); got != `a\\b\*c\?d\[e]` {
+		t.Fatalf("escapeRsyncPattern = %q", got)
+	}
+}
+
+func TestSyncFilesAndDirectoryNeverReportDeletes(t *testing.T) {
+	local := t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, "a.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(local, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &scriptedRunner{lines: []string{"a.txt", "deleting old.txt", "rsync: skipped"}}
+	backend := New(config.Server{Host: "h", User: "u"}, filepath.Join(t.TempDir(), "rsync.exe"), filepath.Join(t.TempDir(), "ssh_gun.exe"), WithRunner(runner))
+	mapping := &config.SyncMapping{LocalPath: local, RemotePath: "/r", DeleteExtra: true}
+	var events []syncengine.Event
+	stats, err := backend.SyncFiles(context.Background(), mapping, []string{"a.txt"}, func(e syncengine.Event) { events = append(events, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 1 || stats.Deleted != 0 || len(events) != 1 {
+		t.Fatalf("stats=%+v events=%v", stats, events)
+	}
+	stats, err = backend.SyncDirectory(context.Background(), mapping, "sub", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Deleted != 0 || stats.Finished.IsZero() {
+		t.Fatalf("stats=%+v", stats)
+	}
 }
 
 func envValue(env []string, key string) string {
