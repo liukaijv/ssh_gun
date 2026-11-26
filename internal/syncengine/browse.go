@@ -10,13 +10,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type BrowseEntry struct {
-	Name    string `json:"name"`
-	RelPath string `json:"relPath"`
-	IsDir   bool   `json:"isDir"`
-	Skipped bool   `json:"skipped"`
+	Name    string    `json:"name"`
+	RelPath string    `json:"relPath"`
+	IsDir   bool      `json:"isDir"`
+	Skipped bool      `json:"skipped"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"modTime"`
 	// Status is the git change kind for a leaf file in the changes tab:
 	// "added", "modified", or "renamed". Directories and the files tab leave it empty.
 	Status string `json:"status,omitempty"`
@@ -93,12 +96,18 @@ func ListLocalDir(root, rel string, matcher *ExcludeMatcher) ([]BrowseEntry, err
 		if err != nil || childRel == "" || IsExcludedVCSPath(childRel) {
 			continue
 		}
-		isDir := child.IsDir()
+		info, err := child.Info()
+		if err != nil {
+			continue
+		}
+		isDir := info.IsDir()
 		entries = append(entries, BrowseEntry{
 			Name:    child.Name(),
 			RelPath: childRel,
 			IsDir:   isDir,
 			Skipped: matcher != nil && matcher.ShouldSkip(childRel, isDir),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
@@ -232,7 +241,7 @@ func ListGitChanges(root string, matcher *ExcludeMatcher) ([]BrowseEntry, error)
 		if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 || IsLocalReparsePoint(abs) {
 			continue
 		}
-		addBrowseFile(byPath, clean, change.Status, matcher)
+		addBrowseFile(byPath, root, clean, change.Status, info, matcher)
 	}
 	entries := make([]BrowseEntry, 0, len(byPath))
 	for _, entry := range byPath {
@@ -265,7 +274,7 @@ func hasReparseAncestor(root, rel string) bool {
 	return false
 }
 
-func addBrowseFile(byPath map[string]BrowseEntry, rel, status string, matcher *ExcludeMatcher) {
+func addBrowseFile(byPath map[string]BrowseEntry, root, rel, status string, info os.FileInfo, matcher *ExcludeMatcher) {
 	parts := strings.Split(rel, "/")
 	acc := ""
 	for i, part := range parts {
@@ -286,6 +295,14 @@ func addBrowseFile(byPath map[string]BrowseEntry, rel, status string, matcher *E
 		}
 		if last {
 			entry.Status = status
+			entry.Size = info.Size()
+			entry.ModTime = info.ModTime()
+		} else {
+			dirAbs := filepath.Join(root, filepath.FromSlash(acc))
+			if dirInfo, err := os.Lstat(dirAbs); err == nil {
+				entry.Size = dirInfo.Size()
+				entry.ModTime = dirInfo.ModTime()
+			}
 		}
 		byPath[acc] = entry
 	}

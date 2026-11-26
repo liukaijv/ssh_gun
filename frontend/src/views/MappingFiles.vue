@@ -1,29 +1,42 @@
 <script lang="ts" setup>
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NDropdown, NSpace, NSpin, NTabPane, NTabs, useMessage } from 'naive-ui'
+import { NButton, NDropdown, NSelect, NSpace, NSpin, NTabPane, NTabs, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import {
   ListMappingChanges,
   ListMappingDir,
   ListSyncMappings,
+  RevealMappingPath,
   SyncMappingChanges,
   SyncMappingFiles,
   SyncMappingPath,
 } from '../../wailsjs/go/main/App'
+import { ClipboardSetText } from '../../wailsjs/runtime/runtime'
 import {
+  absoluteLocalPath,
   changeDirectoryPaths,
   directoryHasSyncableChange,
   menuSync,
   nestChanges,
   nextFileSelection,
   selectionWithout,
+  shouldListDirChildren,
+  sortBrowseRows,
+  sortBrowseTree,
   visibleFiles,
   type BrowseRow,
+  type SortMode,
 } from './mappingBrowse'
 import MappingFileTree from './MappingFileTree.vue'
 
-type TreeNode = BrowseRow & { children?: TreeNode[]; loaded?: boolean; error?: string; open?: boolean }
+type TreeNode = BrowseRow & {
+  children?: TreeNode[]
+  loaded?: boolean
+  loading?: boolean
+  error?: string
+  open?: boolean
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -43,7 +56,14 @@ const anchor = ref<string | null>(null)
 const expanded = ref<Set<string>>(new Set())
 const syncing = ref(false)
 const loading = ref(false)
+const sortMode = ref<SortMode>('name')
 let loadSeq = 0
+
+const sortOptions = computed(() => [
+  { label: t('mappings.sortByName'), value: 'name' },
+  { label: t('mappings.sortByMtime'), value: 'mtime' },
+  { label: t('mappings.sortBySize'), value: 'size' },
+])
 
 const menuShow = ref(false)
 const menuX = ref(0)
@@ -64,18 +84,35 @@ const menuItems = computed(() => {
       label: t('mappings.syncToRemote'),
       disabled: action.kind === 'disabled' || !mapping.value?.Enabled || syncing.value,
     },
+    { key: 'reveal', label: t('mappings.openFileLocation') },
+    { key: 'copy-absolute', label: t('mappings.copyAbsolutePath') },
+    { key: 'copy-relative', label: t('mappings.copyRelativePath') },
+    { key: 'copy-name', label: t('mappings.copyFileName') },
   ]
 })
 
 function rowFrom(entry: any): BrowseRow {
   const status = entry.status ?? entry.Status
+  const modTime = entry.modTime ?? entry.ModTime
   return {
     name: entry.name ?? entry.Name,
     relPath: entry.relPath ?? entry.RelPath,
     isDir: Boolean(entry.isDir ?? entry.IsDir),
     skipped: Boolean(entry.skipped ?? entry.Skipped),
+    size: Number(entry.size ?? entry.Size ?? 0),
+    modTime: typeof modTime === 'string' ? modTime : modTime ? String(modTime) : '',
     status: typeof status === 'string' && status ? status : undefined,
   }
+}
+
+function applySort() {
+  filesRoot.value = sortBrowseTree(filesRoot.value, sortMode.value)
+  changesRoot.value = sortBrowseTree(changesRoot.value, sortMode.value)
+}
+
+function onSortModeChange(value: SortMode) {
+  sortMode.value = value
+  applySort()
 }
 
 function flatOpen(nodes: TreeNode[]): BrowseRow[] {
@@ -106,7 +143,10 @@ async function loadFiles() {
   try {
     const entries = await ListMappingDir(id.value, '')
     if (seq !== loadSeq) return
-    filesRoot.value = entries.map((entry: any) => ({ ...rowFrom(entry) }))
+    filesRoot.value = sortBrowseRows(
+      entries.map((entry: any) => ({ ...rowFrom(entry) })),
+      sortMode.value,
+    )
   } catch (error: any) {
     if (seq !== loadSeq) return
     filesError.value = String(error)
@@ -124,7 +164,7 @@ async function loadChanges() {
     const flat = (await ListMappingChanges(id.value)).map((entry: any) => rowFrom(entry))
     if (seq !== loadSeq) return
     changesFlat.value = flat
-    changesRoot.value = nestChanges(flat)
+    changesRoot.value = nestChanges(flat, sortMode.value)
     expanded.value = new Set(changeDirectoryPaths(flat))
   } catch (error: any) {
     if (seq !== loadSeq) return
@@ -157,17 +197,28 @@ async function onTabChange(value: 'files' | 'changes') {
 }
 
 async function toggleFileDir(node: TreeNode) {
-  node.open = !node.open
+  if (node.open) {
+    node.open = false
+    setExpanded(node)
+    return
+  }
+  node.open = true
   setExpanded(node)
-  if (!node.open) return
-  // Expanding always re-lists the directory.
+  // Reuse children from a prior expand; refresh() replaces the tree.
+  if (!shouldListDirChildren(node.loaded, node.loading)) return
   node.error = ''
+  node.loading = true
   try {
     const entries = await ListMappingDir(id.value, node.relPath)
-    node.children = entries.map((entry: any) => ({ ...rowFrom(entry) }))
+    node.children = sortBrowseRows(
+      entries.map((entry: any) => ({ ...rowFrom(entry) })),
+      sortMode.value,
+    )
     node.loaded = true
   } catch (error: any) {
     node.error = String(error)
+  } finally {
+    node.loading = false
   }
 }
 
@@ -256,10 +307,51 @@ async function openMenu(row: BrowseRow, event: MouseEvent) {
   menuShow.value = true
 }
 
-function onMenuSelect() {
+async function copyText(text: string) {
+  try {
+    const ok = await ClipboardSetText(text)
+    if (!ok) {
+      message.error(t('mappings.copyFailed'))
+      return
+    }
+    message.success(t('mappings.copied'))
+  } catch (error: any) {
+    message.error(String(error) || t('mappings.copyFailed'))
+  }
+}
+
+async function revealRow(row: BrowseRow) {
+  try {
+    await RevealMappingPath(id.value, row.relPath)
+  } catch (error: any) {
+    message.error(String(error) || t('mappings.openFileLocationFailed'))
+  }
+}
+
+function onMenuSelect(key: string) {
   const row = menuRow.value
   closeMenu()
-  if (row) choose(row)
+  if (!row) return
+  if (key === 'sync') {
+    choose(row)
+    return
+  }
+  if (key === 'reveal') {
+    void revealRow(row)
+    return
+  }
+  const localRoot = String(mapping.value?.LocalPath ?? mapping.value?.localPath ?? '')
+  if (key === 'copy-absolute') {
+    void copyText(absoluteLocalPath(localRoot, row.relPath))
+    return
+  }
+  if (key === 'copy-relative') {
+    void copyText(row.relPath)
+    return
+  }
+  if (key === 'copy-name') {
+    void copyText(row.name)
+  }
 }
 
 onMounted(async () => {
@@ -281,6 +373,15 @@ onMounted(async () => {
     <h2>{{ mapping?.Name }}</h2>
     <!-- <p>{{ mapping?.LocalPath }} → {{ mapping?.RemotePath }}</p> -->
     <n-tabs :value="tab" @update:value="onTabChange">
+      <template #suffix>
+        <n-select
+          :value="sortMode"
+          :options="sortOptions"
+          size="small"
+          style="width: 140px"
+          @update:value="onSortModeChange"
+        />
+      </template>
       <n-tab-pane name="files" :tab="t('mappings.browseFiles')">
         <p v-if="filesError">{{ filesError }}</p>
         <MappingFileTree

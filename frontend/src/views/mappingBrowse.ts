@@ -3,7 +3,51 @@ export type BrowseRow = {
   relPath: string
   isDir: boolean
   skipped: boolean
+  size: number
+  modTime: string
   status?: string
+}
+
+export type SortMode = 'name' | 'mtime' | 'size'
+
+/** Whether expanding a files-tab directory should call ListMappingDir. */
+export function shouldListDirChildren(loaded?: boolean, loading?: boolean): boolean {
+  return !loading && !loaded
+}
+
+export function sortBrowseRows<T extends BrowseRow>(rows: T[], mode: SortMode): T[] {
+  return [...rows].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
+    if (mode === 'mtime') {
+      const left = Date.parse(a.modTime || '') || 0
+      const right = Date.parse(b.modTime || '') || 0
+      if (left !== right) return right - left
+    } else if (mode === 'size') {
+      if ((a.size || 0) !== (b.size || 0)) return (b.size || 0) - (a.size || 0)
+    }
+    const left = a.name.toLowerCase()
+    const right = b.name.toLowerCase()
+    if (left !== right) return left < right ? -1 : 1
+    if (a.name !== b.name) return a.name < b.name ? -1 : 1
+    return 0
+  })
+}
+
+export function sortBrowseTree<T extends BrowseRow & { children?: T[] }>(nodes: T[], mode: SortMode): T[] {
+  const sorted = sortBrowseRows(nodes, mode)
+  for (const node of sorted) {
+    if (node.children?.length) node.children = sortBrowseTree(node.children, mode)
+  }
+  return sorted
+}
+
+// absoluteLocalPath joins the mapping local root with a project-relative path.
+// Separator follows the local root (Windows vs POSIX).
+export function absoluteLocalPath(localRoot: string, relPath: string): string {
+  const sep = localRoot.includes('\\') ? '\\' : '/'
+  const root = localRoot.replace(/[\\/]+$/, '')
+  if (!relPath) return root
+  return `${root}${sep}${relPath.split('/').join(sep)}`
 }
 
 export function changeStatusClass(row: BrowseRow): string {
@@ -73,9 +117,8 @@ export function menuSync(
 export type ChangeNode = BrowseRow & { children: ChangeNode[]; open: boolean }
 
 // nestChanges builds the changes tree. Rows are ordered by depth so a parent
-// exists before its children. Order within one depth is kept, which preserves
-// folders-first and case-insensitive name order from the backend.
-export function nestChanges(rows: BrowseRow[]): ChangeNode[] {
+// exists before its children, then each sibling list is sorted by mode.
+export function nestChanges(rows: BrowseRow[], mode: SortMode = 'name'): ChangeNode[] {
   const nodes = new Map<string, ChangeNode>()
   const roots: ChangeNode[] = []
   const ordered = [...rows].sort((a, b) => a.relPath.split('/').length - b.relPath.split('/').length)
@@ -87,7 +130,7 @@ export function nestChanges(rows: BrowseRow[]): ChangeNode[] {
     if (parent) parent.children.push(node)
     else roots.push(node)
   }
-  return roots
+  return sortBrowseTree(roots, mode)
 }
 
 export function changeDirectoryPaths(rows: BrowseRow[]): string[] {

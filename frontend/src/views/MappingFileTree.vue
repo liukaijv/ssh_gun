@@ -1,8 +1,9 @@
 <script lang="ts" setup>
-import { NButton } from 'naive-ui'
+import { NButton, NSpin } from 'naive-ui'
+import { useI18n } from 'vue-i18n'
 import { changeStatusClass, type BrowseRow } from './mappingBrowse'
 
-type TreeNode = BrowseRow & { children?: TreeNode[]; error?: string; open?: boolean }
+type TreeNode = BrowseRow & { children?: TreeNode[]; error?: string; open?: boolean; loading?: boolean }
 
 withDefaults(
   defineProps<{
@@ -21,6 +22,8 @@ const emit = defineEmits<{
   file: [row: BrowseRow, event: MouseEvent]
   menu: [row: BrowseRow, event: MouseEvent]
 }>()
+
+const { t } = useI18n()
 
 function rowOpacity(node: TreeNode, dimSkippedDirs: boolean) {
   if (!node.skipped) return 1
@@ -50,8 +53,15 @@ function rowOpacity(node: TreeNode, dimSkippedDirs: boolean) {
         <n-button data-menu size="tiny" text @click.stop="emit('menu', node, $event)">···</n-button>
       </div>
       <p v-if="node.error" style="margin: 2px 0 2px 16px; color: #d03050">{{ node.error }}</p>
+      <div
+        v-if="node.open && node.loading"
+        style="margin: 2px 0 2px 16px; display: flex; align-items: center; gap: 6px; opacity: 0.65; font-size: 12px"
+      >
+        <n-spin :size="14" />
+        <span>{{ t('mappings.dirLoading') }}</span>
+      </div>
       <MappingFileTree
-        v-if="node.open && node.children"
+        v-if="node.open && node.children && !node.loading"
         :nodes="node.children"
         :selected="selected"
         :dim-skipped-dirs="dimSkippedDirs"

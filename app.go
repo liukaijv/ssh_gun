@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,6 +46,11 @@ type App struct {
 	syncStatusMu sync.Mutex
 	syncStatus   map[string]runtimeSyncStatus
 
+	// browseMatchers caches ExcludeMatcher for mapping browse/changes APIs.
+	// Building one can WalkDir the whole local tree when UseGitignore is on.
+	browseMatcherMu sync.Mutex
+	browseMatchers  map[string]browseMatcherCacheEntry
+
 	// quitting separates a real quit (tray menu) from closing the window,
 	// which only hides it into the notification area.
 	quitting atomic.Bool
@@ -56,11 +62,69 @@ type runtimeSyncStatus struct {
 	Error  string
 }
 
+type browseMatcherCacheEntry struct {
+	fingerprint string
+	matcher     *syncengine.ExcludeMatcher
+}
+
 func NewApp() *App {
 	return &App{
-		pool:       sshclient.NewPool(),
-		syncStatus: make(map[string]runtimeSyncStatus),
+		pool:           sshclient.NewPool(),
+		syncStatus:     make(map[string]runtimeSyncStatus),
+		browseMatchers: make(map[string]browseMatcherCacheEntry),
 	}
+}
+
+// matcherFingerprint identifies exclude-relevant mapping fields for browse cache.
+func matcherFingerprint(m *config.SyncMapping) string {
+	if m == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(m.LocalPath)
+	b.WriteByte('\x00')
+	b.WriteString(m.FilterMode)
+	b.WriteByte('\x00')
+	if m.UseGitignore {
+		b.WriteByte('1')
+	} else {
+		b.WriteByte('0')
+	}
+	b.WriteByte('\x00')
+	b.WriteString(strings.Join(m.Excludes, "\x01"))
+	b.WriteByte('\x00')
+	b.WriteString(strings.Join(m.Includes, "\x01"))
+	return b.String()
+}
+
+func (a *App) excludeMatcherFor(m *config.SyncMapping) (*syncengine.ExcludeMatcher, error) {
+	if m == nil {
+		return syncengine.NewExcludeMatcher(nil)
+	}
+	fp := matcherFingerprint(m)
+	a.browseMatcherMu.Lock()
+	defer a.browseMatcherMu.Unlock()
+	if entry, ok := a.browseMatchers[m.ID]; ok && entry.fingerprint == fp && entry.matcher != nil {
+		return entry.matcher, nil
+	}
+	matcher, err := syncengine.NewExcludeMatcher(m)
+	if err != nil {
+		return nil, err
+	}
+	if a.browseMatchers == nil {
+		a.browseMatchers = make(map[string]browseMatcherCacheEntry)
+	}
+	a.browseMatchers[m.ID] = browseMatcherCacheEntry{fingerprint: fp, matcher: matcher}
+	return matcher, nil
+}
+
+func (a *App) invalidateBrowseMatcher(id string) {
+	if id == "" {
+		return
+	}
+	a.browseMatcherMu.Lock()
+	delete(a.browseMatchers, id)
+	a.browseMatcherMu.Unlock()
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -376,6 +440,7 @@ func (a *App) UpsertSyncMapping(m config.SyncMapping) error {
 	if err := a.store.UpsertSyncMapping(m); err != nil {
 		return err
 	}
+	a.invalidateBrowseMatcher(m.ID)
 	_ = a.engine.StopMapping(m.ID)
 	if m.AutoSync && m.Enabled {
 		mm := m
@@ -386,6 +451,7 @@ func (a *App) UpsertSyncMapping(m config.SyncMapping) error {
 
 func (a *App) DeleteSyncMapping(id string) error {
 	_ = a.engine.StopMapping(id)
+	a.invalidateBrowseMatcher(id)
 	return a.store.DeleteSyncMapping(id)
 }
 
@@ -398,7 +464,7 @@ func (a *App) ListMappingDir(id, rel string) ([]syncengine.BrowseEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	matcher, err := syncengine.NewExcludeMatcher(&m)
+	matcher, err := a.excludeMatcherFor(&m)
 	if err != nil {
 		return nil, err
 	}
@@ -410,11 +476,47 @@ func (a *App) ListMappingChanges(id string) ([]syncengine.BrowseEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	matcher, err := syncengine.NewExcludeMatcher(&m)
+	matcher, err := a.excludeMatcherFor(&m)
 	if err != nil {
 		return nil, err
 	}
 	return syncengine.ListGitChanges(m.LocalPath, matcher)
+}
+
+// RevealMappingPath opens the system file manager on a path under the mapping
+// local root and selects it when the OS supports that.
+func (a *App) RevealMappingPath(id, rel string) error {
+	m, err := a.store.GetSyncMapping(id)
+	if err != nil {
+		return err
+	}
+	rootAbs, err := filepath.Abs(m.LocalPath)
+	if err != nil {
+		return err
+	}
+	target := rootAbs
+	if strings.TrimSpace(rel) != "" {
+		clean, err := syncengine.CleanRel(rel)
+		if err != nil {
+			return err
+		}
+		target = filepath.Join(rootAbs, filepath.FromSlash(clean))
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	relCheck, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil || relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("path outside mapping local directory")
+	}
+	if _, err := os.Lstat(targetAbs); err != nil {
+		return err
+	}
+	if err := shellopen.Reveal(targetAbs); err != nil {
+		return fmt.Errorf("open file location: %w", err)
+	}
+	return nil
 }
 
 func (a *App) SyncMappingFiles(id string, rels []string) (map[string]any, error) {
@@ -437,7 +539,7 @@ func (a *App) SyncMappingChanges(id, rel string) (map[string]any, error) {
 	if !m.Enabled {
 		return nil, fmt.Errorf("sync mapping is disabled")
 	}
-	matcher, err := syncengine.NewExcludeMatcher(&m)
+	matcher, err := a.excludeMatcherFor(&m)
 	if err != nil {
 		return nil, err
 	}

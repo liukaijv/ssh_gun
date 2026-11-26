@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  absoluteLocalPath,
   changeDirectoryPaths,
   changeStatusClass,
   directoryHasSyncableChange,
@@ -7,31 +8,49 @@ import {
   nestChanges,
   nextFileSelection,
   selectionWithout,
+  shouldListDirChildren,
+  sortBrowseRows,
   visibleFiles,
   type BrowseRow,
 } from './mappingBrowse'
 
+function row(partial: Partial<BrowseRow> & Pick<BrowseRow, 'name' | 'relPath' | 'isDir'>): BrowseRow {
+  return {
+    skipped: false,
+    size: 0,
+    modTime: '',
+    ...partial,
+  }
+}
+
 const rows: BrowseRow[] = [
-  { name: 'src', relPath: 'src', isDir: true, skipped: false },
-  { name: 'a.txt', relPath: 'src/a.txt', isDir: false, skipped: false },
-  { name: 'b.txt', relPath: 'src/b.txt', isDir: false, skipped: true },
-  { name: 'c.txt', relPath: 'c.txt', isDir: false, skipped: false },
+  row({ name: 'src', relPath: 'src', isDir: true }),
+  row({ name: 'a.txt', relPath: 'src/a.txt', isDir: false }),
+  row({ name: 'b.txt', relPath: 'src/b.txt', isDir: false, skipped: true }),
+  row({ name: 'c.txt', relPath: 'c.txt', isDir: false }),
 ]
 
 describe('mappingBrowse', () => {
+  it('skips ListMappingDir when already loaded or loading', () => {
+    expect(shouldListDirChildren(false, false)).toBe(true)
+    expect(shouldListDirChildren(true, false)).toBe(false)
+    expect(shouldListDirChildren(false, true)).toBe(false)
+    expect(shouldListDirChildren(true, true)).toBe(false)
+  })
+
   it('lists only visible files in tree order', () => {
-    expect(visibleFiles(rows, new Set(['src'])).map((row) => row.relPath)).toEqual(['src/a.txt', 'src/b.txt', 'c.txt'])
-    expect(visibleFiles(rows, new Set()).map((row) => row.relPath)).toEqual(['c.txt'])
+    expect(visibleFiles(rows, new Set(['src'])).map((item) => item.relPath)).toEqual(['src/a.txt', 'src/b.txt', 'c.txt'])
+    expect(visibleFiles(rows, new Set()).map((item) => item.relPath)).toEqual(['c.txt'])
   })
 
   it('hides nested files when an ancestor directory is collapsed', () => {
     const nested: BrowseRow[] = [
-      { name: 'src', relPath: 'src', isDir: true, skipped: false },
-      { name: 'sub', relPath: 'src/sub', isDir: true, skipped: false },
-      { name: 'deep.txt', relPath: 'src/sub/deep.txt', isDir: false, skipped: false },
+      row({ name: 'src', relPath: 'src', isDir: true }),
+      row({ name: 'sub', relPath: 'src/sub', isDir: true }),
+      row({ name: 'deep.txt', relPath: 'src/sub/deep.txt', isDir: false }),
     ]
-    expect(visibleFiles(nested, new Set(['src/sub'])).map((row) => row.relPath)).toEqual([])
-    expect(visibleFiles(nested, new Set(['src', 'src/sub'])).map((row) => row.relPath)).toEqual(['src/sub/deep.txt'])
+    expect(visibleFiles(nested, new Set(['src/sub'])).map((item) => item.relPath)).toEqual([])
+    expect(visibleFiles(nested, new Set(['src', 'src/sub'])).map((item) => item.relPath)).toEqual(['src/sub/deep.txt'])
   })
 
   it('toggles with ctrl and ranges with shift', () => {
@@ -73,17 +92,17 @@ describe('mappingBrowse', () => {
   })
 
   it('disables menu sync on skipped directories and allows skipped files', () => {
-    const skippedDir: BrowseRow = { name: 'dist', relPath: 'dist', isDir: true, skipped: true }
+    const skippedDir = row({ name: 'dist', relPath: 'dist', isDir: true, skipped: true })
     expect(menuSync(skippedDir, ['c.txt'], true)).toEqual({ kind: 'disabled' })
     expect(menuSync(rows[2], [], false)).toEqual({ kind: 'files', rels: ['src/b.txt'], clear: false })
   })
 
   it('keeps folders first and name order while nesting changes', () => {
     const flat: BrowseRow[] = [
-      { name: 'src', relPath: 'src', isDir: true, skipped: false },
-      { name: 'directory', relPath: 'src/directory', isDir: true, skipped: false },
-      { name: 'aa.go', relPath: 'src/aa.go', isDir: false, skipped: false },
-      { name: 'b.go', relPath: 'src/b.go', isDir: false, skipped: false },
+      row({ name: 'src', relPath: 'src', isDir: true }),
+      row({ name: 'directory', relPath: 'src/directory', isDir: true }),
+      row({ name: 'aa.go', relPath: 'src/aa.go', isDir: false }),
+      row({ name: 'b.go', relPath: 'src/b.go', isDir: false }),
     ]
     const tree = nestChanges(flat)
     expect(tree.map((node) => node.relPath)).toEqual(['src'])
@@ -92,6 +111,18 @@ describe('mappingBrowse', () => {
     expect(tree[0].children.find((node) => node.relPath === 'src/directory')?.open).toBe(true)
     expect(tree[0].children.find((node) => node.relPath === 'src/aa.go')?.open).toBe(false)
     expect(changeDirectoryPaths(flat)).toEqual(['src', 'src/directory'])
+  })
+
+  it('sorts by name, mtime, and size with directories first', () => {
+    const items: BrowseRow[] = [
+      row({ name: 'b.txt', relPath: 'b.txt', isDir: false, size: 100, modTime: '2024-01-01T00:00:00Z' }),
+      row({ name: 'a.txt', relPath: 'a.txt', isDir: false, size: 30, modTime: '2024-01-03T00:00:00Z' }),
+      row({ name: 'zdir', relPath: 'zdir', isDir: true, size: 50, modTime: '2024-01-02T00:00:00Z' }),
+      row({ name: 'adir', relPath: 'adir', isDir: true, size: 5, modTime: '2024-01-04T00:00:00Z' }),
+    ]
+    expect(sortBrowseRows(items, 'name').map((item) => item.name)).toEqual(['adir', 'zdir', 'a.txt', 'b.txt'])
+    expect(sortBrowseRows(items, 'mtime').map((item) => item.name)).toEqual(['adir', 'zdir', 'a.txt', 'b.txt'])
+    expect(sortBrowseRows(items, 'size').map((item) => item.name)).toEqual(['zdir', 'adir', 'b.txt', 'a.txt'])
   })
 
   it('drops selected files under a collapsed directory', () => {
@@ -105,16 +136,25 @@ describe('mappingBrowse', () => {
     })
   })
 
+  it('joins absolute paths using the local root separator', () => {
+    expect(absoluteLocalPath('D:\\Work\\project', 'Library/Api/foo.php')).toBe(
+      'D:\\Work\\project\\Library\\Api\\foo.php',
+    )
+    expect(absoluteLocalPath('D:\\Work\\project\\', 'src/a.txt')).toBe('D:\\Work\\project\\src\\a.txt')
+    expect(absoluteLocalPath('/home/u/project', 'src/a.txt')).toBe('/home/u/project/src/a.txt')
+    expect(absoluteLocalPath('/home/u/project/', '')).toBe('/home/u/project')
+  })
+
   it('maps git change kinds to color classes and skips directories', () => {
-    expect(changeStatusClass({ name: 'src', relPath: 'src', isDir: true, skipped: false, status: 'added' })).toBe('')
-    expect(changeStatusClass({ name: 'a.txt', relPath: 'a.txt', isDir: false, skipped: false })).toBe('')
-    expect(changeStatusClass({ name: 'a.txt', relPath: 'a.txt', isDir: false, skipped: false, status: 'added' })).toBe(
+    expect(changeStatusClass(row({ name: 'src', relPath: 'src', isDir: true, status: 'added' }))).toBe('')
+    expect(changeStatusClass(row({ name: 'a.txt', relPath: 'a.txt', isDir: false }))).toBe('')
+    expect(changeStatusClass(row({ name: 'a.txt', relPath: 'a.txt', isDir: false, status: 'added' }))).toBe(
       'change-status-added',
     )
-    expect(changeStatusClass({ name: 'b.txt', relPath: 'b.txt', isDir: false, skipped: false, status: 'modified' })).toBe(
+    expect(changeStatusClass(row({ name: 'b.txt', relPath: 'b.txt', isDir: false, status: 'modified' }))).toBe(
       'change-status-modified',
     )
-    expect(changeStatusClass({ name: 'c.txt', relPath: 'c.txt', isDir: false, skipped: false, status: 'renamed' })).toBe(
+    expect(changeStatusClass(row({ name: 'c.txt', relPath: 'c.txt', isDir: false, status: 'renamed' }))).toBe(
       'change-status-renamed',
     )
   })
@@ -122,7 +162,7 @@ describe('mappingBrowse', () => {
   it('detects whether a directory has non-skipped changed files', () => {
     expect(directoryHasSyncableChange(rows, 'src')).toBe(true)
     expect(directoryHasSyncableChange([rows[0], rows[2]], 'src')).toBe(false)
-    expect(directoryHasSyncableChange([{ name: 'x.txt', relPath: 'src2/x.txt', isDir: false, skipped: false }], 'src')).toBe(false)
+    expect(directoryHasSyncableChange([row({ name: 'x.txt', relPath: 'src2/x.txt', isDir: false })], 'src')).toBe(false)
     expect(directoryHasSyncableChange(rows, '')).toBe(false)
   })
 })

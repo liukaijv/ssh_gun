@@ -91,14 +91,20 @@ func TestListLocalDirOneLevelGrayAndHidden(t *testing.T) {
 	if entries[1].IsDir || entries[1].RelPath != "keep.txt" || entries[1].Name != "keep.txt" || entries[1].Skipped {
 		t.Fatalf("keep file = %+v", entries[1])
 	}
+	if entries[1].Size != 1 || entries[1].ModTime.IsZero() {
+		t.Fatalf("keep file meta = %+v", entries[1])
+	}
 	if entries[2].IsDir || entries[2].RelPath != "skip.txt" || entries[2].Name != "skip.txt" || !entries[2].Skipped {
 		t.Fatalf("gray file = %+v", entries[2])
+	}
+	if entries[0].ModTime.IsZero() {
+		t.Fatalf("dir meta = %+v", entries[0])
 	}
 	nested, err := ListLocalDir(root, "sub", matcher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(nested) != 1 || nested[0].RelPath != "sub/nested.txt" {
+	if len(nested) != 1 || nested[0].RelPath != "sub/nested.txt" || nested[0].Size != 1 || nested[0].ModTime.IsZero() {
 		t.Fatalf("nested = %+v", nested)
 	}
 	if _, err := ListLocalDir(root, "keep.txt", matcher); err == nil {
@@ -177,6 +183,9 @@ func TestListGitChangesFiltersStatus(t *testing.T) {
 	fresh, ok := got["fresh.txt"]
 	if !ok || !fresh.Skipped || fresh.Status != GitStatusAdded {
 		t.Fatalf("fresh.txt = %+v", fresh)
+	}
+	if fresh.Size != 3 || fresh.ModTime.IsZero() {
+		t.Fatalf("fresh.txt meta = %+v", fresh)
 	}
 	plain := t.TempDir()
 	if _, err := ListGitChanges(plain, matcher); !errors.Is(err, ErrNotGitRepo) {

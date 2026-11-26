@@ -90,6 +90,10 @@ export function RecentLogs() {
   return window['go']['main']['App']['RecentLogs']();
 }
 
+export function RevealMappingPath(arg1, arg2) {
+  return window['go']['main']['App']['RevealMappingPath'](arg1, arg2);
+}
+
 export function RunFullSync(arg1) {
   return window['go']['main']['App']['RunFullSync'](arg1);
 }

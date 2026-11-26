@@ -49,6 +49,8 @@ export function PortForwardStatus(arg1:string):Promise<forward.Status>;
 
 export function RecentLogs():Promise<Array<string>>;
 
+export function RevealMappingPath(arg1:string,arg2:string):Promise<void>;
+
 export function RunFullSync(arg1:string):Promise<Record<string, any>>;
 
 export function SelectLocalDirectory(arg1:string):Promise<string>;
